@@ -23,7 +23,7 @@ from sqlalchemy.orm import selectinload
 
 from app.config import settings
 from app.database import get_db
-from app.database.models import Employee
+from app.database.models import Employee, Role
 
 
 # JWT config
@@ -125,7 +125,7 @@ async def get_current_user(
 
     result = await db.execute(
         select(Employee)
-        .options(selectinload(Employee.department))
+        .options(selectinload(Employee.department), selectinload(Employee.custom_role))
         .where(Employee.id == uuid.UUID(payload["sub"]))
     )
     employee = result.scalar_one_or_none()
@@ -151,3 +151,25 @@ async def require_admin(
             detail="Admin access required",
         )
     return current_user
+
+
+def require_permission(permission: str):
+    """
+    FastAPI dependency factory — checks a specific permission on the employee's custom role.
+    Admins bypass all permission checks.
+
+    Usage: Depends(require_permission("kb.upload"))
+    """
+    async def _check(current_user: Employee = Depends(get_current_user)) -> Employee:
+        if current_user.role == "admin":
+            return current_user
+        if (
+            current_user.custom_role
+            and permission in (current_user.custom_role.permissions or [])
+        ):
+            return current_user
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Permission required: {permission}",
+        )
+    return Depends(_check)

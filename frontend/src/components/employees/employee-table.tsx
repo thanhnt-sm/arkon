@@ -37,6 +37,8 @@ type Employee = {
   department_name: string;
   is_active: boolean;
   has_token: boolean;
+  custom_role_id?: string;
+  custom_role_name?: string;
 };
 
 type Props = {
@@ -155,12 +157,19 @@ export function EmployeeTable({ employees, loading, onEdit, onRefresh }: Props) 
                   </div>
                 </TableCell>
                 <TableCell>
-                  <Badge
-                    variant={emp.role === "admin" ? "default" : "secondary"}
-                    className="text-xs capitalize"
-                  >
-                    {emp.role}
-                  </Badge>
+                  <div className="flex flex-col gap-1">
+                    <Badge
+                      variant={emp.role === "admin" ? "default" : "secondary"}
+                      className="text-xs capitalize w-fit"
+                    >
+                      {emp.role}
+                    </Badge>
+                    {emp.custom_role_name && (
+                      <Badge variant="outline" className="text-xs w-fit font-normal">
+                        {emp.custom_role_name}
+                      </Badge>
+                    )}
+                  </div>
                 </TableCell>
                 <TableCell className="text-sm">{emp.department_name}</TableCell>
                 <TableCell>

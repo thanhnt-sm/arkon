@@ -257,8 +257,30 @@ class KnowledgeType(Base):
 
 
 # ---------------------------------------------------------------------------
-# RBAC: Departments, Employees, Knowledge Scopes
+# RBAC: Roles, Departments, Employees, Knowledge Scopes
 # ---------------------------------------------------------------------------
+
+
+class Role(Base):
+    """Custom permission role assignable to employees."""
+    __tablename__ = "roles"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    name: Mapped[str] = mapped_column(String(100), nullable=False, unique=True)
+    description: Mapped[Optional[str]] = mapped_column(Text)
+    permissions: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    is_system: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    # Relationships
+    employees: Mapped[list["Employee"]] = relationship(back_populates="custom_role")
 
 
 class Department(Base):
@@ -311,6 +333,10 @@ class Employee(Base):
     department_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("departments.id", ondelete="CASCADE")
     )
+    custom_role_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("roles.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     mcp_token: Mapped[Optional[str]] = mapped_column(
         String(500), unique=True,
         comment="Bearer token for MCP authentication",
@@ -326,6 +352,7 @@ class Employee(Base):
 
     # Relationships
     department: Mapped["Department"] = relationship(back_populates="employees")
+    custom_role: Mapped[Optional["Role"]] = relationship(back_populates="employees")
     personal_scopes: Mapped[list["KnowledgeScope"]] = relationship(
         back_populates="employee",
         foreign_keys="KnowledgeScope.employee_id",

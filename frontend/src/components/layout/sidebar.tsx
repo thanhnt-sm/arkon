@@ -18,6 +18,7 @@ const navItems: NavItem[] = [
   { label: "Knowledge Types", href: "/types", icon: "category", adminOnly: true },
   { label: "Departments", href: "/departments", icon: "business", adminOnly: true },
   { label: "Employees", href: "/employees", icon: "group", adminOnly: true },
+  { label: "Roles", href: "/roles", icon: "admin_panel_settings", adminOnly: true },
   { label: "Contacts", href: "/contacts", icon: "contacts" },
   { label: "Settings", href: "/settings", icon: "settings", adminOnly: true },
 ];

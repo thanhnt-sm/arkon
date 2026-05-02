@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.database import get_db
-from app.database.models import Department, Employee, KnowledgeScope
+from app.database.models import Department, Employee, KnowledgeScope, Role
 from app.services.mcp_auth_service import MCPAuthService
 from app.services.auth_service import get_current_user, require_admin, hash_password
 
@@ -44,6 +44,7 @@ class EmployeeCreate(BaseModel):
     password: Optional[str] = None  # Optional on update
     role: str = "employee"  # "admin" or "employee"
     department_id: str
+    custom_role_id: Optional[str] = None
 
 
 class EmployeeOut(BaseModel):
@@ -56,6 +57,8 @@ class EmployeeOut(BaseModel):
     is_active: bool
     has_token: bool
     last_connected: Optional[str] = None
+    custom_role_id: Optional[str] = None
+    custom_role_name: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -153,7 +156,10 @@ async def list_employees(
     _admin: Employee = Depends(require_admin),
 ):
     """List employees, optionally filtered by department."""
-    stmt = select(Employee).options(selectinload(Employee.department))
+    stmt = (
+        select(Employee)
+        .options(selectinload(Employee.department), selectinload(Employee.custom_role))
+    )
     if department_id:
         stmt = stmt.where(Employee.department_id == uuid.UUID(department_id))
     stmt = stmt.order_by(Employee.name)
@@ -171,6 +177,8 @@ async def list_employees(
             is_active=e.is_active,
             has_token=bool(e.mcp_token),
             last_connected=e.last_connected.isoformat() if e.last_connected else None,
+            custom_role_id=str(e.custom_role_id) if e.custom_role_id else None,
+            custom_role_name=e.custom_role.name if e.custom_role else None,
         )
         for e in employees
     ]
@@ -200,6 +208,7 @@ async def create_employee(
         password_hash=hash_password(body.password),
         role=body.role,
         department_id=uuid.UUID(body.department_id),
+        custom_role_id=uuid.UUID(body.custom_role_id) if body.custom_role_id else None,
     )
     db.add(emp)
     await db.flush()
@@ -220,6 +229,7 @@ async def update_employee(
     emp.email = body.email
     emp.role = body.role
     emp.department_id = uuid.UUID(body.department_id)
+    emp.custom_role_id = uuid.UUID(body.custom_role_id) if body.custom_role_id else None
     if body.password:
         emp.password_hash = hash_password(body.password)
     await db.flush()

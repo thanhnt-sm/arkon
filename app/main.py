@@ -116,7 +116,7 @@ app.add_middleware(
 app.mount("/mcp", mcp_server.http_app(stateless_http=True))
 
 # --- REST API Routers ---
-from app.routers import sources, notes, contacts, search, auth, admin_settings, categories, rbac, knowledge_types, projects  # noqa: E402
+from app.routers import sources, notes, contacts, search, auth, admin_settings, categories, rbac, knowledge_types, projects, roles  # noqa: E402
 
 app.include_router(auth.router, prefix="/api", tags=["auth"])
 app.include_router(sources.router, prefix="/api", tags=["sources"])
@@ -128,6 +128,7 @@ app.include_router(admin_settings.router, prefix="/api", tags=["settings"])
 app.include_router(rbac.router, prefix="/api", tags=["rbac"])
 app.include_router(knowledge_types.router, prefix="/api", tags=["knowledge-types"])
 app.include_router(projects.router, prefix="/api", tags=["projects"])
+app.include_router(roles.router, prefix="/api", tags=["roles"])
 
 
 @app.get("/")

@@ -12,6 +12,11 @@ export type Department = {
   name: string;
 };
 
+export type Role = {
+  id: string;
+  name: string;
+};
+
 export type Employee = {
   id: string;
   name: string;
@@ -22,11 +27,14 @@ export type Employee = {
   is_active: boolean;
   has_token: boolean;
   last_connected?: string;
+  custom_role_id?: string;
+  custom_role_name?: string;
 };
 
 export default function EmployeesPage() {
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [departments, setDepartments] = useState<Department[]>([]);
+  const [roles, setRoles] = useState<Role[]>([]);
   const [loading, setLoading] = useState(true);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editEmployee, setEditEmployee] = useState<Employee | null>(null);
@@ -46,6 +54,7 @@ export default function EmployeesPage() {
   useEffect(() => {
     loadEmployees();
     api<Department[]>("/api/departments").then(setDepartments).catch(() => {});
+    api<Role[]>("/api/roles").then(setRoles).catch(() => {});
   }, [loadEmployees]);
 
   const handleCreate = () => {
@@ -88,6 +97,7 @@ export default function EmployeesPage() {
         onOpenChange={setDialogOpen}
         employee={editEmployee}
         departments={departments}
+        roles={roles}
         onSaved={loadEmployees}
       />
     </>
