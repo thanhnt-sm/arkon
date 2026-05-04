@@ -17,7 +17,7 @@ const manrope = Manrope({
 });
 
 export const metadata: Metadata = {
-  title: "Arkon — Enterprise AI Control Center",
+  title: "Arkon - Knowledge Base Center",
   description:
     "Centralized knowledge management and access control for Claude ecosystem",
 };

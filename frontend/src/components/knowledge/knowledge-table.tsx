@@ -342,7 +342,12 @@ function EditSourceDialog({
             <Label>Knowledge Type</Label>
             <Select value={typeId} onValueChange={(v) => setTypeId(v ?? "")}>
               <SelectTrigger className="bg-background">
-                <SelectValue placeholder="No type" />
+                {typeId ? (() => { const t = types.find(x => x.id === typeId); return t ? (
+                  <div className="flex items-center gap-2">
+                    <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: t.color }} />
+                    <span>{t.name}</span>
+                  </div>
+                ) : <SelectValue placeholder="No type" />; })() : <SelectValue placeholder="No type" />}
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="">No type</SelectItem>
@@ -362,7 +367,7 @@ function EditSourceDialog({
             <Label>Department</Label>
             <Select value={deptId} onValueChange={(v) => setDeptId(v ?? "")}>
               <SelectTrigger className="bg-background">
-                <SelectValue placeholder="No department" />
+                <span>{deptId ? (departments.find(d => d.id === deptId)?.name ?? "No department") : "No department"}</span>
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="">No department</SelectItem>

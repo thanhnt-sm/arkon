@@ -99,18 +99,21 @@ export function UploadDialog({ open, onOpenChange, types, departments, onUploade
           {/* Knowledge Type */}
           <div className="flex flex-col gap-2">
             <Label>Knowledge Type</Label>
-            <Select value={typeId} onValueChange={(v) => v && setTypeId(v)}>
+            <Select value={typeId} onValueChange={(v) => setTypeId(v ?? "")}>
               <SelectTrigger className="bg-background">
-                <SelectValue placeholder="Select type (optional)" />
+                {typeId ? (() => { const t = types.find(x => x.id === typeId); return t ? (
+                  <div className="flex items-center gap-2">
+                    <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: t.color }} />
+                    <span>{t.name}</span>
+                  </div>
+                ) : <SelectValue placeholder="Select type (optional)" />; })() : <SelectValue placeholder="Select type (optional)" />}
               </SelectTrigger>
               <SelectContent>
+                <SelectItem value="">None</SelectItem>
                 {types.map((t) => (
                   <SelectItem key={t.id} value={t.id}>
                     <div className="flex items-center gap-2">
-                      <span
-                        className="w-2.5 h-2.5 rounded-full"
-                        style={{ backgroundColor: t.color }}
-                      />
+                      <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: t.color }} />
                       {t.name}
                     </div>
                   </SelectItem>
@@ -122,11 +125,12 @@ export function UploadDialog({ open, onOpenChange, types, departments, onUploade
           {/* Department */}
           <div className="flex flex-col gap-2">
             <Label>Department</Label>
-            <Select value={deptId} onValueChange={(v) => v && setDeptId(v)}>
+            <Select value={deptId} onValueChange={(v) => setDeptId(v ?? "")}>
               <SelectTrigger className="bg-background">
-                <SelectValue placeholder="Select department (optional)" />
+                <span>{deptId ? (departments.find(d => d.id === deptId)?.name ?? "Select department (optional)") : "Select department (optional)"}</span>
               </SelectTrigger>
               <SelectContent>
+                <SelectItem value="">None</SelectItem>
                 {departments.map((d) => (
                   <SelectItem key={d.id} value={d.id}>
                     {d.name}
