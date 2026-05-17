@@ -7,6 +7,15 @@ x-backend: &backend
   image: arkon-backend:latest
   env_file: [.env.docker]
   restart: always
+  environment:
+    - HTTP_PROXY=http://squid:3128
+    - HTTPS_PROXY=http://squid:3128
+    - NO_PROXY=localhost,127.0.0.1,postgres,redis,minio,api,worker,worker_skills,frontend
+  networks:
+    - arkon_internal
+  read_only: true
+  tmpfs:
+    - /tmp
   depends_on:
     postgres:
       condition: service_healthy
@@ -37,6 +46,8 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    networks:
+      - arkon_internal
 
   redis:
     image: redis:7-alpine
@@ -52,6 +63,8 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+    networks:
+      - arkon_internal
 
   minio:
     image: minio/minio:latest
@@ -71,6 +84,18 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
+    networks:
+      - arkon_internal
+
+  squid:
+    image: ubuntu/squid:latest
+    container_name: arkon_squid
+    restart: always
+    volumes:
+      - ./squid/squid.conf:/etc/squid/squid.conf:ro
+    networks:
+      - arkon_internal
+      - arkon_external
 
   # ── Application ───────────────────────────────────────────────
 
@@ -118,11 +143,23 @@ services:
     environment:
       - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:5055}
       - INTERNAL_API_URL=http://api:5055
+      - NEXT_TELEMETRY_DISABLED=1
     depends_on:
       api:
         condition: service_healthy
+    networks:
+      - arkon_internal
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /app/.next/cache
 
 volumes:
   postgres_data:
   redis_data:
   minio_data:
+
+networks:
+  arkon_internal:
+    internal: true
+  arkon_external:

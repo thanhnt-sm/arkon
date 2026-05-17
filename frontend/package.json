@@ -3,9 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start",
+    "dev": "NEXT_TELEMETRY_DISABLED=1 next dev",
+    "build": "NEXT_TELEMETRY_DISABLED=1 next build",
+    "start": "NEXT_TELEMETRY_DISABLED=1 next start",
     "lint": "eslint"
   },
   "dependencies": {
@@ -17,6 +17,7 @@
     "d3-force": "^3.0.0",
     "diff": "^9.0.0",
     "lucide-react": "^1.14.0",
+    "material-symbols": "^0.44.8",
     "next": "16.2.4",
     "react": "19.2.4",
     "react-dom": "19.2.4",
