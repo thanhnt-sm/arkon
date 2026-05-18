@@ -86,6 +86,7 @@ services:
       retries: 10
     networks:
       - arkon_internal
+      - arkon_external
 
   squid:
     image: ubuntu/squid:latest
@@ -112,6 +113,9 @@ services:
       timeout: 5s
       retries: 5
       start_period: 30s
+    networks:
+      - arkon_internal
+      - arkon_external
 
   worker:
     <<: *backend
@@ -149,6 +153,7 @@ services:
         condition: service_healthy
     networks:
       - arkon_internal
+      - arkon_external
     read_only: true
     tmpfs:
       - /tmp
