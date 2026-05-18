@@ -40,6 +40,7 @@ export default function WikiPageViewer() {
   const scopeType = searchParams.get("scopeType") || undefined;
   const scopeId = searchParams.get("scopeId") || undefined;
   const isScoped = !!scopeType && scopeType !== "global";
+  const isProjectScoped = isScoped && scopeType === "project";
 
   const [page, setPage] = React.useState<WikiPageDetail | null>(null);
   const [notFound, setNotFound] = React.useState(false);
@@ -202,10 +203,16 @@ export default function WikiPageViewer() {
       />
 
       <div className="flex-1 flex gap-0 -mx-6 md:-mx-8 lg:-mx-10 -mb-6 md:-mb-8 lg:-mb-10 min-h-0 border-t border-border overflow-hidden">
-        {/* Left: Page Tree */}
+        {/* Left: Page Tree — for scoped detail, fetch only that scope's pages
+            via the general scope-aware endpoint (works for both department and
+            project scopes; the project-specific endpoint 404s on department IDs). */}
         <WikiPageTree
           activeSlug={fullSlug}
-          pagesUrl={isScoped ? `/api/projects/${scopeId}/wiki?limit=200` : undefined}
+          pagesUrl={
+            isScoped
+              ? `/api/wiki/pages?scope_type=${scopeType}&scope_id=${scopeId}&limit=200`
+              : undefined
+          }
           linkQueryParams={isScoped ? `?scopeType=${scopeType}&scopeId=${scopeId}` : undefined}
         />
 
@@ -241,22 +248,23 @@ export default function WikiPageViewer() {
             </div>
           ) : page ? (
             <div className="max-w-3xl mx-auto px-8 py-8">
-              {/* Breadcrumb & Back Button */}
+              {/* Breadcrumb & Back Button — project scope returns to /workspaces,
+                  department scope returns to the wiki index (no dept detail page). */}
               <div className="flex items-center gap-3 mb-6">
                 <Link
-                  href={isScoped ? `/workspaces` : "/wiki"}
+                  href={isProjectScoped ? `/workspaces` : "/wiki"}
                   className="flex items-center justify-center w-8 h-8 rounded-full border border-border bg-background text-muted-foreground hover:bg-accent hover:text-foreground transition-colors shrink-0 shadow-sm"
-                  title={isScoped ? "Back to Workspace" : "Back to Wiki Index"}
+                  title={isProjectScoped ? "Back to Workspace" : "Back to Wiki Index"}
                 >
                   <span className="material-symbols-outlined text-[18px]">arrow_back</span>
                 </Link>
 
                 <nav className="flex items-center gap-1.5 text-xs text-muted-foreground">
                   <Link
-                    href={isScoped ? `/workspaces` : "/wiki"}
+                    href={isProjectScoped ? `/workspaces` : "/wiki"}
                     className="hover:text-foreground transition-colors font-medium"
                   >
-                    {isScoped ? "Workspace" : "Wiki"}
+                    {isProjectScoped ? "Workspace" : "Wiki"}
                   </Link>
                   <span className="material-symbols-outlined text-muted-foreground/50" style={{ fontSize: 14 }}>chevron_right</span>
                   <span className="capitalize font-medium">
