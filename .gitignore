@@ -61,3 +61,6 @@ uv.lock
 
 # Ai Client
 .claude/
+# Sync audit history (local forensic archive — not for VCS)
+.agent/sync_history/
+.agent/sync_diff.patch

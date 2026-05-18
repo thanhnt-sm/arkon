@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Git post-merge hook — auto-run security audit after every merge.
+# Installed by: .agent/workflows/install-git-hooks.sh
+
+SCRIPT_DIR="$(git rev-parse --show-toplevel)/.agent/workflows"
+
+echo ""
+echo "🔒 [post-merge] Running security audit..."
+bash "$SCRIPT_DIR/run_audit.sh"
+EXIT_CODE=$?
+
+if [ $EXIT_CODE -eq 1 ]; then
+  echo ""
+  echo "❌ Security audit FAILED. Review issues above before proceeding."
+  echo "   This merge is already applied — fix the issues and commit the remediation."
+fi
+# Exit 0 even on audit failure: post-merge cannot abort an already-applied merge.
+# The audit output is the enforcement signal.
+exit 0

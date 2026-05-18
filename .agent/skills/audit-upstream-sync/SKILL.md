@@ -5,55 +5,67 @@ description: Skill rà soát và tái áp dụng các bản vá bảo mật (Zer
 
 # Skill: Audit Upstream Sync (Advanced Anti-Exfiltration)
 
-Hệ thống Wiki nhạy cảm yêu cầu bảo vệ dữ liệu ở mức cao nhất. Skill này không chỉ chặn các thư viện phổ biến mà còn quét các **mẫu logic tự viết (custom code)** có hành vi thu thập hoặc gửi dữ liệu người dùng ra ngoài.
+Hệ thống Wiki nhạy cảm — mọi dữ liệu người dùng, hành vi, log, metric đều KHÔNG được gửi ra bên thứ 3.
+Chỉ được phép giao tiếp: nội bộ hệ thống + AI provider (OpenAI, Anthropic, Google Gemini).
 
-## 🚀 QUY TRÌNH THỰC HIỆN (Unified Workflow)
+## Kiến Trúc Bảo Vệ (Defense-in-Depth)
 
-Khi được kích hoạt, Agent PHẢI thực hiện các bước sau theo thứ tự:
+```
+[Code scan]  →  [Squid whitelist]  →  [Network isolation]  →  [Container hardening]
+ Static grep      Specific domains     arkon_internal:true     read_only filesystem
+```
 
-### Bước 0: Đồng bộ hóa an toàn (Safe Sync)
-- **Hành động**: Chạy script `./.agent/workflows/safe_sync.sh`.
-- **Mục tiêu**: Fetch code từ `upstream`, hiển thị file diff (`.agent/sync_diff.patch`) để người dùng xem trước khi merge.
-- **Yêu cầu**: Chỉ tiến hành Merge khi người dùng xác nhận "y".
+## Quy Trình Thực Hiện
 
-### Bước 1: Quét bảo mật tự động (Automated Audit)
-- **Hành động**: Chạy script `./.agent/workflows/run_audit.sh`.
-- **Mục tiêu**: Tự động phát hiện các điểm rò rỉ dữ liệu, telemetry và logic mạng nghi vấn trong code mới.
+### Bước 0: Đồng bộ hóa an toàn
+- Chạy `./.agent/workflows/safe_sync.sh`
+- Script sẽ: fetch → hiện diff stats → **alert nếu dependency files thay đổi** → hỏi xác nhận
+- Diff được **archive** vào `.agent/sync_history/` (không bao giờ xóa — forensic record)
+- Sau khi merge: tự động chạy `run_audit.sh`
 
-### Bước 2: Rà soát thủ công (Deep Manual Audit)
-Dựa trên kết quả từ Bước 1 và file diff, rà soát các danh mục sau:
+### Bước 1: Audit tự động
+`run_audit.sh` chạy 8 kiểm tra:
+1. Framework telemetry (`NEXT_TELEMETRY_DISABLED`)
+2. Forbidden SDKs (PostHog, Mixpanel, Sentry, Datadog, v.v.)
+3. Custom network calls (`fetch`, `axios`, `httpx`, `aiohttp`, `sendBeacon`, `WebSocket`, `eval`)
+4. Behavioral tracking patterns
+5. External CDN references (runtime — leak IP người dùng)
+6. Squid whitelist integrity (chặn wildcard `.googleapis.com`)
+7. Container hardening (`read_only`, `internal: true`)
+8. Dependency CVE audit (`npm audit`, `pip-audit`)
 
-#### 1. Quét Logic Tự Viết (Custom Data Collection)
-- [ ] **Network Request Patterns**: Quét toàn bộ code tìm các hàm `fetch`, `axios`, `requests.post`, `urllib` trỏ tới các URL lạ.
-- [ ] **Suspicious Event Handlers**: Tìm các hàm có tên như `track`, `sendEvent`, `reportUsage`, `capture`, `emitAction`.
-- [ ] **Hidden Metadata**: Kiểm tra các request "bình thường" xem có bị chèn thêm "payload" dữ liệu người dùng hay không.
-- [ ] **Browser Storage Abuse**: Kiểm tra việc ghi vào `localStorage`, `sessionStorage` hoặc `Cookies` thông tin nhạy cảm.
+### Bước 2: Rà soát thủ công (khi audit báo WARN)
+- [ ] Kiểm tra network call bị flag — có trỏ URL ngoài whitelist không?
+- [ ] Kiểm tra dependency mới trong `package.json` / `pyproject.toml`
+- [ ] Kiểm tra `localStorage`/`sessionStorage`/`Cookie` có ghi thông tin nhạy cảm không?
+- [ ] Xác nhận `squid/squid.conf` chỉ có domain cụ thể (không có wildcard)
 
-#### 2. Kiểm Soát Nhật Ký & Hành Vi (Logging & Behavior)
-- [ ] **External Transports**: Chặn các transport log gửi dữ liệu ra server bên ngoài.
-- [ ] **Audit Trail Storage**: Đảm bảo log thao tác chỉ ghi vào bảng `audit_logs` nội bộ.
+## Squid Whitelist — Nguyên Tắc
 
-#### 3. Vô hiệu hóa Telemetry & Tracking (Libraries)
-- [ ] Kiểm tra `.env`, `package.json`, `pyproject.toml` để chặn đứng các SDK nổi tiếng.
-- [ ] Đảm bảo `NEXT_TELEMETRY_DISABLED=1`.
+| Domain | Mục đích | Cho phép |
+|--------|----------|----------|
+| `api.openai.com` | OpenAI LLM/Embedding | ✅ |
+| `api.anthropic.com` | Anthropic Claude | ✅ |
+| `generativelanguage.googleapis.com` | Google Gemini (LLM, OCR, Embedding) | ✅ |
+| `.googleapis.com` (wildcard) | Quá rộng — analytics/firebase/drive | ❌ |
+| `.google.com` (wildcard) | Quá rộng | ❌ |
+| Bất kỳ analytics/tracking SDK | Thu thập hành vi người dùng | ❌ |
 
-#### 4. Cách Ly Hạ Tầng & Proxy (Final Defense)
-- [ ] **Squid Proxy Whitelist**: Đảm bảo `squid/squid.conf` vẫn chỉ cho phép các domain an toàn.
-- [ ] **Network Isolation**: Đảm bảo `arkon_internal` vẫn được thiết lập `internal: true`.
+Để thêm provider mới: thêm **specific subdomain** vào `squid/squid.conf` và document lý do.
 
----
+## Fix Khi Phát Hiện Vi Phạm
 
-## 🛠️ Hướng Dẫn Thực Hiện Fix
+1. **Network call lạ**: Xóa hoặc redirect về internal logging
+2. **SDK tracking**: Xóa khỏi `package.json`/`pyproject.toml`, chạy lại lock
+3. **Squid quá rộng**: Thay wildcard bằng subdomain cụ thể
+4. **CDN external**: Download asset về `public/` hoặc cài qua npm
 
-Nếu phát hiện logic tự viết nghi vấn:
-1. **Neutralize Calls**: Vô hiệu hóa các đoạn code `fetch` hoặc `post` trỏ ra server lạ.
-2. **Redirect to Local**: Chuyển hướng các log/event này về hệ thống logging nội bộ hoặc xóa bỏ hoàn toàn.
-3. **Strict Whitelisting**: Thắt chặt Squid Proxy hơn nữa.
-4. **Code Removal**: Xóa bỏ các đoạn mã "theo dõi" hành vi người dùng.
+## Git Hook (Auto-Enforcement)
 
----
+`post-merge` hook tự động chạy audit sau mỗi merge.
+Cài lần đầu sau clone: `bash .agent/workflows/install-git-hooks.sh`
 
-## 🚀 Cách Sử Dụng
-Dùng skill này ngay sau khi:
-- Người dùng yêu cầu đồng bộ từ repo gốc (`/audit-upstream-sync`).
-- Thấy xuất hiện các file mới nghi vấn trong folder `services/`, `utils/` hoặc `hooks/`.
+## Kích Hoạt Skill
+- Người dùng yêu cầu sync từ upstream (`/audit-upstream-sync`)
+- Xuất hiện file mới trong `services/`, `utils/`, `hooks/`, `providers/`
+- Sau mỗi `npm install` hoặc `pip install` thêm package mới

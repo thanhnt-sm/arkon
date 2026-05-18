@@ -1,58 +1,71 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Upstream Sync Gateway (Safe Sync Workflow)
-# Description: Prevents blind `git pull` from an upstream repository.
-# Forces a fetch and displays a diff for audit. The user must manually confirm
-# before changes are merged.
+# Prevents blind git pull from upstream. Forces diff review + dependency alert.
+# User must confirm before merge. Diff is archived (never deleted) for forensics.
 # ==============================================================================
 
-set -e
+set -euo pipefail
 
-# Default to upstream/main if not specified
 REMOTE=${1:-upstream}
 BRANCH=${2:-main}
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+HISTORY_DIR=".agent/sync_history"
+PATCH_FILE="$HISTORY_DIR/${TIMESTAMP}_${REMOTE}_${BRANCH}.patch"
 
-# Check if upstream exists
+mkdir -p "$HISTORY_DIR"
+
 if ! git remote | grep -q "^$REMOTE$"; then
-    echo "❌ Error: Remote '$REMOTE' not found. Please add it using:"
-    echo "   git remote add upstream <repository-url>"
+    echo "❌ Remote '$REMOTE' not found. Add it: git remote add upstream <url>"
     exit 1
 fi
 
-echo "🔄 Fetching latest changes from $REMOTE/$BRANCH..."
-git fetch $REMOTE $BRANCH
+echo "🔄 Fetching $REMOTE/$BRANCH..."
+git fetch "$REMOTE" "$BRANCH"
 
-# Check if there are incoming changes
 LOCAL=$(git rev-parse @)
 REMOTE_REF=$(git rev-parse "$REMOTE/$BRANCH")
 
 if [ "$LOCAL" = "$REMOTE_REF" ]; then
-    echo "✅ Up to date with $REMOTE/$BRANCH. Nothing to sync."
+    echo "✅ Already up to date with $REMOTE/$BRANCH."
     exit 0
 fi
 
-echo "⚠️  Incoming changes detected. Displaying diff statistics:"
-echo "--------------------------------------------------------------------------------"
-git diff --stat HEAD..$REMOTE_REF
-echo "--------------------------------------------------------------------------------"
+echo ""
+echo "⚠️  Incoming changes detected. Diff statistics:"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+git diff --stat HEAD.."$REMOTE_REF"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-echo "🔍 Generating detailed diff for review (saving to .agent/sync_diff.patch)..."
-git diff HEAD..$REMOTE_REF > .agent/sync_diff.patch
+# ── Dependency change alert ──────────────────────────────────────────────────
+DEP_CHANGES=$(git diff HEAD.."$REMOTE_REF" -- \
+  package.json pyproject.toml requirements.txt requirements*.txt 2>/dev/null || true)
 
-echo "Please review .agent/sync_diff.patch carefully."
-echo "Pay special attention to new dependencies (package.json, pyproject.toml) or new network requests."
+if [ -n "$DEP_CHANGES" ]; then
+    echo ""
+    echo "🚨 DEPENDENCY FILES CHANGED — Review carefully before proceeding:"
+    echo "$DEP_CHANGES" | grep "^[+-]" | grep -v "^---\|^+++" | head -40
+    echo ""
+    echo "   Action required: verify no new packages with unknown provenance."
+fi
 
-read -p "❓ Proceed with merging these changes? (y/N): " choice
-case "$choice" in 
-  y|Y ) 
+# ── Archive diff for forensic trail ─────────────────────────────────────────
+echo "📦 Archiving diff to $PATCH_FILE (never deleted — forensic record)..."
+git diff HEAD.."$REMOTE_REF" > "$PATCH_FILE"
+echo "   Commit range: $(git rev-parse --short HEAD)..$(git rev-parse --short "$REMOTE_REF")"
+
+echo ""
+echo "Review $PATCH_FILE before confirming."
+read -r -p "❓ Proceed with merge? (y/N): " choice
+case "$choice" in
+  y|Y )
     echo "✅ Merging $REMOTE/$BRANCH..."
-    git merge $REMOTE_REF
-    echo "🧹 Cleaning up diff patch..."
-    rm -f .agent/sync_diff.patch
-    echo "🎉 Sync complete!"
+    git merge "$REMOTE_REF"
+    echo "🎉 Sync complete. Running security audit..."
+    bash "$(dirname "$0")/run_audit.sh"
     ;;
-  * ) 
-    echo "❌ Merge aborted. Changes remain fetched but not merged."
+  * )
+    echo "❌ Merge aborted. Diff archived at $PATCH_FILE for reference."
     exit 1
     ;;
 esac
