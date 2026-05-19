@@ -5,6 +5,28 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.7.1] — 2026-05-20
+
+Hotfix for a race condition in the MRP REFINE phase that surfaced while
+compiling longer source documents (observed on
+`meeting-notes-260519-2124-chien…`). No schema migration, no API change.
+
+### Fixed
+
+- **MRP REFINE concurrent-session race** — Phase 3 fanned out up to
+  `MAX_WRITER_CONCURRENCY` page writers via `asyncio.gather`, all
+  sharing the orchestrator's single `AsyncSession`. SQLAlchemy
+  `AsyncSession` is not safe for concurrent use, so simultaneous
+  `get_page_by_slug` lookups (UPDATE fetches plus the `read_kb_page`
+  tool inside the complex writer's agent loop) raced and corrupted
+  the session, causing intermittent draft generation failures on
+  documents with several UPDATE pages or a large existing wiki.
+  Each `_write_one` now opens its own session from
+  `async_session_factory`; the orchestrator's session is reserved for
+  the final `plan.plan_json` commit.
+
+---
+
 ## [0.7.0] — 2026-05-19
 
 Scaling the contribute/review workflow: review queue + bulk approve, author
