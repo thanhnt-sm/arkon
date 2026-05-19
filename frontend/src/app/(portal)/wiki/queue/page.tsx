@@ -115,7 +115,7 @@ export default function WikiQueuePage() {
   return (
     <>
       <PageHeader
-        title="Your contributions"
+        title="Contributions"
         description={
           scopeMode === "review"
             ? "Drafts waiting for your review across every scope."

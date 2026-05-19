@@ -211,7 +211,7 @@ export default function WikiIndexPage() {
                 title="Drafts you authored and drafts waiting for your review"
               >
                 <span className="material-symbols-outlined" style={{ fontSize: 16 }}>edit_note</span>
-                Your contributions
+                Contributions
               </Link>
             )}
             <Link

@@ -442,7 +442,12 @@ async def notify_approved(
     reviewer: Employee,
     version_label: Optional[str] = None,
 ) -> None:
-    """Fire after a successful approve. Author gets the good news."""
+    """Fire after a successful approve. Author gets the good news.
+
+    For wiki drafts we also notify the authors of every OTHER still-pending
+    draft on the same page so they know the page has advanced under them —
+    their drafts will now flag as having a version conflict on next approve.
+    """
     author_id = adapter.author_id(obj)
     if not author_id:
         return
@@ -456,6 +461,42 @@ async def notify_approved(
         target_id=str(obj.id),
         actor_id=reviewer.id,
     )
+
+    # Cross-author awareness for wiki drafts only.
+    if isinstance(obj, WikiPageDraft) and obj.page_id is not None:
+        from sqlalchemy import select as _select
+        sibling_rows = await db.execute(
+            _select(WikiPageDraft.author_id, WikiPageDraft.id)
+            .where(
+                WikiPageDraft.page_id == obj.page_id,
+                WikiPageDraft.status == "pending",
+                WikiPageDraft.id != obj.id,
+            )
+        )
+        # Group by author so a user with 2 sibling drafts gets 1 notification.
+        seen_authors: set[uuid.UUID] = set()
+        for sibling_author_id, sibling_id in sibling_rows.all():
+            if not sibling_author_id or sibling_author_id == author_id:
+                continue  # don't ping the author we already notified
+            if sibling_author_id in seen_authors:
+                continue
+            seen_authors.add(sibling_author_id)
+            await notification_service.notify(
+                db, recipient_id=sibling_author_id,
+                type=adapter.types.approved,  # same type — the author's draft is now stale
+                subject=(
+                    f"Page advanced while your draft was pending: "
+                    f"{adapter.display_name(obj)}{suffix}"
+                ),
+                body=(
+                    f"{reviewer.name or reviewer.email} approved another draft on "
+                    "this page. Your draft will flag as conflicting on the next "
+                    "approve — re-base or withdraw."
+                ),
+                target_type=adapter.artifact_type,
+                target_id=str(sibling_id),  # link to the sibling's own draft
+                actor_id=reviewer.id,
+            )
 
 
 async def notify_rejected(

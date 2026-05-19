@@ -437,7 +437,12 @@ class WikiPageRevision(Base):
 
     __table_args__ = (
         Index("ix_wiki_revisions_page_id", "page_id"),
-        Index("ix_wiki_revisions_page_version", "page_id", "version"),
+        # Unique constraint, not just an index — guards against the
+        # historical race where two concurrent approves could both INSERT a
+        # revision row at the same version. The advisory lock in
+        # wiki_service.approve_draft prevents this in normal operation; this
+        # constraint is the DB-level backstop.
+        Index("uq_wiki_revisions_page_version", "page_id", "version", unique=True),
     )
 
 

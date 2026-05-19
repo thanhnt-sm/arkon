@@ -46,6 +46,10 @@ export function WikiDraftBanner({
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [liveDraft, setLiveDraft] = React.useState<DraftResponse | null>(null);
+  // Cross-draft compare: when set, diff the active draft against this sibling
+  // draft's content_md instead of the current page content. "" means compare
+  // against the current page (default).
+  const [compareWithDraftId, setCompareWithDraftId] = React.useState<string>("");
 
   const baseDraft = drafts[idx];
   const draft = liveDraft && baseDraft && liveDraft.id === baseDraft.id ? liveDraft : baseDraft;
@@ -73,9 +77,11 @@ export function WikiDraftBanner({
     }
   };
 
-  // Reset live snapshot when the user pages to a different draft.
+  // Reset live snapshot + compare-with selection when the user pages to a
+  // different draft.
   React.useEffect(() => {
     setLiveDraft(null);
+    setCompareWithDraftId("");
   }, [baseDraft?.id]);
 
   // Poll the single draft while AI checks are still running.
@@ -331,11 +337,40 @@ export function WikiDraftBanner({
         ))}
       </div>
 
+      {/* Cross-draft compare picker — only shown on the Diff tab when there
+          is more than one pending draft on the same page. Lets the reviewer
+          diff this draft against any sibling draft instead of the current
+          page, so concurrent contributions are easier to reconcile. */}
+      {tab === "diff" && !isCreate && drafts.length > 1 && (
+        <div className={`px-4 pt-2 text-[11px] ${palette.muted} flex items-center gap-2`}>
+          <span>Compare with:</span>
+          <select
+            value={compareWithDraftId}
+            onChange={(e) => setCompareWithDraftId(e.target.value)}
+            className="h-6 rounded border border-current/20 bg-white/60 dark:bg-black/20 px-1.5 text-[11px] focus:outline-none"
+          >
+            <option value="">Current page</option>
+            {drafts
+              .filter((d) => d.id !== draft.id && d.draft_kind !== "create")
+              .map((d) => (
+                <option key={d.id} value={d.id}>
+                  Draft by {d.author_name || "unknown"}
+                  {d.revision_round > 0 ? ` (round ${d.revision_round + 1})` : ""}
+                </option>
+              ))}
+          </select>
+        </div>
+      )}
+
       {/* Content preview */}
       <div className="px-4 py-3 max-h-72 overflow-y-auto">
         {tab === "diff" && !isCreate ? (
           <WikiDraftDiff
-            oldText={currentContent}
+            oldText={
+              compareWithDraftId
+                ? drafts.find((d) => d.id === compareWithDraftId)?.content_md ?? currentContent
+                : currentContent
+            }
             newText={draft.content_md}
             mode="unified"
             contextLines={3}

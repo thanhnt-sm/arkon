@@ -785,6 +785,24 @@ async def approve_draft(
     """
     final_content = edited_content_md.strip() if edited_content_md else draft.content_md
 
+    # Serialise concurrent approves on the same page. Without this, two
+    # reviewers clicking Approve on different pending drafts of the same
+    # page within the same second can both read page.version=N, both set
+    # N+1, and both INSERT a WikiPageRevision(version=N+1) — leaving a
+    # duplicate revision row and a non-deterministic last-writer-wins for
+    # the page content. Lock by slug (when known) so we don't block the
+    # entire page table.
+    target_slug: Optional[str] = None
+    if draft.draft_kind == "create":
+        target_slug = (draft.suggested_metadata or {}).get("slug")
+    else:
+        existing_page = await session.get(WikiPage, draft.page_id) if draft.page_id else None
+        target_slug = existing_page.slug if existing_page else None
+    if target_slug:
+        await session.execute(
+            select(func.pg_advisory_xact_lock(func.hashtext(target_slug)))
+        )
+
     if draft.draft_kind == "create":
         meta = dict(draft.suggested_metadata or {})
         overrides = metadata_overrides or {}

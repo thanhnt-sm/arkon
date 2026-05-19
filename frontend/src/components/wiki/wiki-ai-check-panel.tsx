@@ -50,6 +50,39 @@ function formatMatch(m: AiCheckItem["matches"][number]): string {
   return JSON.stringify(m);
 }
 
+// Human-friendly labels for each check id. The fallback (last entry) covers
+// any new check id added on the backend that doesn't yet have a label.
+const CHECK_LABELS: Record<string, { label: string; category: string }> = {
+  "pii.email": { label: "Email addresses", category: "Sensitive data" },
+  "pii.phone_vn": { label: "Phone numbers", category: "Sensitive data" },
+  "pii.cccd_vn": { label: "National ID numbers", category: "Sensitive data" },
+  "secret.api_key_sk": { label: "Generic API key (sk-…)", category: "Sensitive data" },
+  "secret.anthropic": { label: "Anthropic API key", category: "Sensitive data" },
+  "secret.aws_access": { label: "AWS access key", category: "Sensitive data" },
+  "secret.github_pat": { label: "GitHub personal access token", category: "Sensitive data" },
+  "secret.google_api": { label: "Google API key", category: "Sensitive data" },
+  "secret.jwt": { label: "JWT token", category: "Sensitive data" },
+  "secret.private_key": { label: "Private key block", category: "Sensitive data" },
+  "links.broken": { label: "Broken wikilinks", category: "Structure" },
+  "links.self": { label: "Self-referencing link", category: "Structure" },
+  "length.sanity": { label: "Content length", category: "Structure" },
+  "markdown.heading_jump": { label: "Heading hierarchy", category: "Structure" },
+  "markdown.unclosed_fence": { label: "Unclosed code fence", category: "Structure" },
+  "semantic.duplicate": { label: "Similar existing pages", category: "Duplicates" },
+  "llm.tone": { label: "Writing tone", category: "AI judgment" },
+  "llm.scope_fit": { label: "Topic fit", category: "AI judgment" },
+  "llm.factual": { label: "Factual concerns", category: "AI judgment" },
+  "runner.error": { label: "AI runner error", category: "System" },
+};
+
+function describeCheck(id: string): { label: string; category: string } {
+  if (CHECK_LABELS[id]) return CHECK_LABELS[id];
+  // Fallback for unknown ids: prettify "foo.bar_baz" -> "Foo · Bar baz".
+  const [cat, rest] = id.split(".");
+  const pretty = (rest || cat).replace(/_/g, " ").replace(/\b\w/g, (m) => m.toUpperCase());
+  return { label: pretty, category: cat.replace(/_/g, " ") };
+}
+
 export function WikiAiCheckPanel({ status, results }: Props) {
   const [expanded, setExpanded] = React.useState(false);
   const badge = statusBadge(status);
@@ -106,6 +139,7 @@ export function WikiAiCheckPanel({ status, results }: Props) {
                 <ul className="space-y-1.5">
                   {flagged.map((c) => {
                     const ico = checkIcon(c);
+                    const desc = describeCheck(c.id);
                     return (
                       <li key={c.id} className="flex gap-2 text-xs">
                         <span
@@ -115,8 +149,11 @@ export function WikiAiCheckPanel({ status, results }: Props) {
                           {ico.icon}
                         </span>
                         <div className="flex-1 min-w-0">
-                          <p className="font-mono text-[11px] text-muted-foreground">
-                            [{c.layer}] {c.id}
+                          <p className="flex flex-wrap items-baseline gap-x-1.5" title={c.id}>
+                            <span className="font-medium">{desc.label}</span>
+                            <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                              {desc.category}
+                            </span>
                           </p>
                           {c.message && <p>{c.message}</p>}
                           {c.matches.length > 0 && (
@@ -158,10 +195,12 @@ export function WikiAiCheckPanel({ status, results }: Props) {
                     <ul className="mt-1.5 space-y-1 pl-1">
                       {[...passed, ...skipped].map((c) => {
                         const ico = checkIcon(c);
+                        const desc = describeCheck(c.id);
                         return (
                           <li
                             key={c.id}
                             className="flex gap-2 text-[11px] text-muted-foreground"
+                            title={c.id}
                           >
                             <span
                               className={`material-symbols-outlined shrink-0 mt-0.5 ${ico.cls}`}
@@ -170,8 +209,9 @@ export function WikiAiCheckPanel({ status, results }: Props) {
                               {ico.icon}
                             </span>
                             <div className="flex-1 min-w-0">
-                              <span className="font-mono">
-                                [{c.layer}] {c.id}
+                              <span>{desc.label}</span>
+                              <span className="ml-1.5 text-muted-foreground/70 text-[10px] uppercase tracking-wide">
+                                {desc.category}
                               </span>
                               {c.message && (
                                 <span className="ml-1 italic">— {c.message}</span>
