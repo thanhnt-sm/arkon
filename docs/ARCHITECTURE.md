@@ -98,7 +98,12 @@ The core compilation pipeline — MAP-REDUCE-PLAN-REFINE-VERIFY:
 
 5. **VERIFY** (`verifier.py`) — citation verification (LLM checks each `[^N]` claim against source excerpt), coverage check (entities with ≥ 3 mentions not covered by any page), conflict check (semantic similarity + LLM contradiction detection against existing KB). All checks non-blocking.
 
+5.5. **DIGEST** (`digest.py`) — Phase 3.5 augmentation between REFINE/VERIFY and COMMIT. Produces one `page_type='digest'` wiki page per source (slug `digest/<source-slug>`). Two strategies: outline-driven per-H1/H2 narrative loop (when `source.outline_json` is non-empty) or flat TOC + plan.summary + first-N chars of sub-pages. Hardening: wiki-link allowlist (only slugs in `plan.page_slugs` accepted), HTML/script strip, recursive size cap (max_depth=4, hard truncation marker on overflow). Failure isolated — digest error sets `source.metadata.digest_failed=true` but does not block `source.status='ready'`.
+
 6. **COMMIT** (`pipeline.py`) — `apply_create` / `apply_update` per page, `upsert_page_embedding`, single atomic `session.commit()`, `regenerate_index`, `append_log`.
+
+### LLM Runtime Profile (`app/ai/runtime_profile.py`)
+Single source of truth for dynamic LLM config. Maps `llm_profile` (`local` | `cloud`) + probed `context_length` + `model_name` to derived knobs (concurrency, chunk size, timeouts, retries). Module-scope cache + `asyncio.Lock` shared across per-request `ProviderRegistry` instances; invalidated explicitly by `PATCH /admin/app-config` so profile toggles take effect on next ingest. LADDER allowlist (`localhost`, `127.0.0.1`, `::1`, plus `192.168.0.0/16` / `10.0.0.0/8` / `172.16.0.0/12` CIDRs) defends against an operator pointing a `local` profile at a billable cloud host. Cloud config preserves pre-change constants (chunk=20k, concurrency=6, timeout=120s, retry=3) for zero-regression behavior. Operator surfaces: `GET /admin/llm-health` (cached profile snapshot), `POST /sources/{id}/regen-digest` (1/min/source rate limit), `mrp.intake_paused` KV gate at 5 worker task entry points for A/B harness windows.
 
 ---
 
