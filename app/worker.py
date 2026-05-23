@@ -54,6 +54,34 @@ async def get_arq_pool() -> ArqRedis:
 from app.utils.progress import ProgressTracker  # noqa: E402
 
 # ---------------------------------------------------------------------------
+# MRP intake pause hook (Phase 9)
+# ---------------------------------------------------------------------------
+
+async def _check_intake_paused(ctx: dict, task_name: str, source_id: str) -> bool:
+    """
+    Returns True iff the operator has paused MRP intake via
+    `app_config.mrp.intake_paused = 'true'`. When paused, the caller MUST
+    re-enqueue itself with `_defer_by=60` and return early — the A/B harness
+    flips the flag back to 'false' once seed/regen completes.
+    """
+    from app.database import async_session_factory
+    from app.services.config_service import ConfigService
+
+    async with async_session_factory() as session:
+        cfg = ConfigService(session)
+        if (await cfg.get("mrp.intake_paused")) != "true":
+            return False
+
+    pool = ctx.get("redis") or await get_arq_pool()
+    try:
+        await pool.enqueue_job(task_name, source_id, _defer_by=60)
+        logger.info(f"[intake_paused] re-enqueued {task_name}({source_id}) for +60s")
+    except Exception as exc:
+        logger.warning(f"[intake_paused] re-enqueue failed for {task_name}: {exc}")
+    return True
+
+
+# ---------------------------------------------------------------------------
 # Ingestion tasks
 # ---------------------------------------------------------------------------
 
@@ -64,6 +92,8 @@ async def ingest_file_task(ctx: dict, source_id: str):
     Image captioning is offloaded to caption_images_task so this job is not blocked by image count.
     File must already be uploaded to MinIO before this task is enqueued.
     """
+    if await _check_intake_paused(ctx, "ingest_file_task", source_id):
+        return
     from app.database import async_session_factory
     from app.database.models import Source, SourceImage
     from app.services.image_service import extract_images
@@ -192,6 +222,8 @@ async def ingest_file_task(ctx: dict, source_id: str):
 
 async def ingest_url_task(ctx: dict, source_id: str):
     """arq task: URL ingestion → wiki compilation."""
+    if await _check_intake_paused(ctx, "ingest_url_task", source_id):
+        return
     from app.database import async_session_factory
     from app.database.models import Source
     from app.services.kb_service import _extract_text_from_url
@@ -631,6 +663,8 @@ async def ingest_map_reduce_task(ctx: dict, source_id: str):
     If mrp_auto_approve_plan=True → immediately enqueues ingest_refine_task.
     Otherwise → sets source.status='plan_ready' and waits for human approval via API.
     """
+    if await _check_intake_paused(ctx, "ingest_map_reduce_task", source_id):
+        return
     from app.ai.mrp.pipeline import run_mrp_pipeline
     from app.ai.registry import ProviderRegistry
     from app.database import async_session_factory
@@ -719,6 +753,8 @@ async def ingest_refine_task(ctx: dict, source_id: str):
     - Plan approval API endpoint (POST /sources/{id}/plan/approve)
     - Auto-approve from ingest_map_reduce_task when mrp_auto_approve_plan=True
     """
+    if await _check_intake_paused(ctx, "ingest_refine_task", source_id):
+        return
     from app.ai.mrp.pipeline import run_refine_pipeline
     from app.ai.registry import ProviderRegistry
     from app.database import async_session_factory
@@ -798,6 +834,8 @@ async def regenerate_plan_task(ctx: dict, source_id: str, user_note: str):
     Toggles plan.status: pending_review/rejected → regenerating → pending_review.
     Frontend polls GET /sources/{id}/plan to observe completion.
     """
+    if await _check_intake_paused(ctx, "regenerate_plan_task", source_id):
+        return
     from app.ai.mrp.reducer import reconcile_with_kb, run_planning_call
     from app.ai.registry import ProviderRegistry
     from app.database import async_session_factory
