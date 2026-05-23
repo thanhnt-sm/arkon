@@ -72,6 +72,16 @@ CORS_ORIGINS=https://your-domain.com
 
 # Required: your public API URL (used by the frontend browser)
 NEXT_PUBLIC_API_URL=https://your-domain.com
+
+# Ingestion pipeline:
+#   MRP_AUTO_APPROVE_PLAN=true   → wiki content appears immediately after upload (dev/staging)
+#   MRP_AUTO_APPROVE_PLAN=false  → halts at `plan_ready` pending human plan approval (prod)
+MRP_AUTO_APPROVE_PLAN=true
+
+# Upload size guard (MB) for /sources/upload, /projects/*/sources/upload,
+# /skill-contributions/*/upload. Rejects with HTTP 413 before RAM buffering.
+# Set to 0 to disable.
+MAX_SOURCE_FILE_MB=100
 ```
 
 > The full `.env.docker.example` documents every available variable.
