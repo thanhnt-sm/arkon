@@ -16,6 +16,12 @@ import json
 from typing import Optional
 
 from loguru import logger
+from tenacity import (
+    AsyncRetrying,
+    retry_if_exception,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from app.ai.agent_protocol import (
     AssistantTurn,
@@ -28,6 +34,100 @@ from app.ai.providers.base import (
     ProviderConfig,
     VisionProvider,
 )
+
+# Substrings that mark an LLM-side transient failure even when wrapped in a
+# 400/BadRequestError envelope (LM Studio quirk: returns 400 on model crash,
+# OOM, or hot-reload mid-request). Lowercase match.
+_TRANSIENT_BADREQUEST_MARKERS = (
+    "model has crashed",
+    "model_not_loaded",
+    "no model loaded",
+    "exit code",
+    "model unloaded",
+    "context length",  # opportunistic — only if combined with crash-style msg
+)
+
+
+def _is_transient_llm_error(exc: BaseException) -> bool:
+    """Classify an OpenAI-SDK exception as transient (retry-worthy)."""
+    # Built-in/asyncio timeouts surface bare when httpx propagates them without
+    # the openai SDK rewrapping — treat them the same as APITimeoutError.
+    if isinstance(exc, (TimeoutError, asyncio.TimeoutError)):
+        return True
+
+    # httpx low-level read/connect/write timeouts — these escape the openai SDK
+    # when the local server (LM Studio) closes the connection mid-stream.
+    try:
+        import httpx
+        if isinstance(
+            exc,
+            (
+                httpx.TimeoutException,
+                httpx.ReadTimeout,
+                httpx.ConnectTimeout,
+                httpx.ReadError,
+                httpx.RemoteProtocolError,
+            ),
+        ):
+            return True
+    except ImportError:
+        pass
+
+    try:
+        import openai
+    except ImportError:
+        return False
+
+    # Plain network/timeout/5xx — always retry
+    if isinstance(
+        exc,
+        (
+            openai.APIConnectionError,
+            openai.APITimeoutError,
+            openai.InternalServerError,
+        ),
+    ):
+        return True
+
+    # BadRequestError from LM Studio when the local model crashed mid-stream
+    if isinstance(exc, openai.BadRequestError):
+        msg = (str(exc) or "").lower()
+        return any(m in msg for m in _TRANSIENT_BADREQUEST_MARKERS)
+
+    # PermissionDeniedError happens when Squid proxy denies — retryable so we
+    # survive a brief proxy config reload race.
+    if hasattr(openai, "PermissionDeniedError") and isinstance(
+        exc, openai.PermissionDeniedError
+    ):
+        return True
+
+    return False
+
+
+def _llm_retry_policy(profile=None) -> AsyncRetrying:
+    """
+    Tenacity policy used by OpenAI-compatible LLM calls (incl. LM Studio).
+
+    Profile-aware (Phase 4): local profile gets a longer retry budget because
+    LM Studio crash/recover cycles are 10-30s, while cloud calls fail-fast.
+    Falls back to cloud-style 3-attempt budget when no profile is attached
+    so existing test mocks continue to work.
+    """
+    if profile is not None and getattr(profile, "is_local", False):
+        attempts = getattr(profile.cfg, "retry_attempts", 8) if hasattr(profile, "cfg") else 8
+        backoff_max = getattr(profile.cfg, "retry_backoff_max_s", 60) if hasattr(profile, "cfg") else 60
+        return AsyncRetrying(
+            stop=stop_after_attempt(attempts),
+            wait=wait_exponential(multiplier=1, min=1, max=backoff_max),
+            retry=retry_if_exception(_is_transient_llm_error),
+            reraise=True,
+        )
+    return AsyncRetrying(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=8),
+        retry=retry_if_exception(_is_transient_llm_error),
+        reraise=True,
+    )
 
 
 class OpenAIEmbedding(EmbeddingProvider):
@@ -130,7 +230,14 @@ class OpenAILLM(LLMProvider):
         if max_tokens is not None:
             kwargs["max_tokens"] = max_tokens
 
-        response = await self.client.chat.completions.create(**kwargs)
+        async for attempt in _llm_retry_policy(getattr(self, "runtime_profile", None)):
+            with attempt:
+                if attempt.retry_state.attempt_number > 1:
+                    logger.warning(
+                        f"OpenAILLM.generate retry #{attempt.retry_state.attempt_number} "
+                        f"model={self.config.model_id}"
+                    )
+                response = await self.client.chat.completions.create(**kwargs)
         return response.choices[0].message.content or ""
 
     async def generate_with_tools(
@@ -155,7 +262,14 @@ class OpenAILLM(LLMProvider):
         if max_tokens is not None:
             kwargs["max_tokens"] = max_tokens
 
-        response = await self.client.chat.completions.create(**kwargs)
+        async for attempt in _llm_retry_policy(getattr(self, "runtime_profile", None)):
+            with attempt:
+                if attempt.retry_state.attempt_number > 1:
+                    logger.warning(
+                        f"OpenAILLM.generate_with_tools retry #{attempt.retry_state.attempt_number} "
+                        f"model={self.config.model_id}"
+                    )
+                response = await self.client.chat.completions.create(**kwargs)
 
         choice = response.choices[0]
         message = choice.message
