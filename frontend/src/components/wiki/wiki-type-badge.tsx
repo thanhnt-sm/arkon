@@ -10,6 +10,7 @@ const TYPE_CONFIG: Record<
   source: { icon: "description", label: "Source", color: "#7b6b8c", bg: "rgba(123,107,140,0.1)" },
   index: { icon: "list_alt", label: "Index", color: "#78706a", bg: "rgba(120,112,106,0.1)" },
   log: { icon: "history", label: "Log", color: "#78706a", bg: "rgba(120,112,106,0.1)" },
+  digest: { icon: "auto_awesome", label: "AI-generated summary", color: "#6b7c8c", bg: "rgba(107,124,140,0.1)" },
 };
 
 export function WikiTypeBadge({ type }: { type: string }) {
@@ -43,6 +44,7 @@ export function wikiTypeGroupLabel(type: string): string {
     source: "Sources",
     index: "Index",
     log: "Log",
+    digest: "Digests",
   };
   return labels[type] ?? type;
 }

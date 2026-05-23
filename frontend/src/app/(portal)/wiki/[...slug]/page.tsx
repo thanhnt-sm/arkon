@@ -458,6 +458,27 @@ export default function WikiPageViewer() {
                   <h1 className="font-heading text-4xl font-normal leading-tight text-foreground">
                     {page.title}
                   </h1>
+                  {page.page_type === "digest" && (
+                    <div className="mt-2">
+                      <span
+                        className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium"
+                        style={{
+                          color: "#6b7c8c",
+                          backgroundColor: "rgba(107,124,140,0.1)",
+                          border: "1px solid rgba(107,124,140,0.25)",
+                        }}
+                        title="This page is an AI-generated summary compiled from the source document."
+                      >
+                        <span
+                          className="material-symbols-outlined"
+                          style={{ fontSize: 14 }}
+                        >
+                          auto_awesome
+                        </span>
+                        AI-generated summary
+                      </span>
+                    </div>
+                  )}
                 </div>
 
                 {mode === "view" && (canEdit || canPropose) && (
