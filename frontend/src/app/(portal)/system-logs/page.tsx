@@ -1,14 +1,10 @@
 "use client";
 
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { PageHeader } from "@/components/shared/page-header";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-
-const API_BASE =
-  process.env.NEXT_PUBLIC_API_URL !== undefined
-    ? process.env.NEXT_PUBLIC_API_URL
-    : "http://localhost:5055";
+import { API_BASE, getToken } from "@/lib/api";
 
 const SOURCES = [
   { id: "api", label: "API" },
@@ -41,7 +37,7 @@ function parseLine(raw: string) {
   };
 }
 
-function LogLine({ raw, dimmed }: { raw: string; dimmed: boolean }) {
+const LogLine = React.memo(function LogLine({ raw, dimmed }: { raw: string; dimmed: boolean }) {
   const { time, level, location, message } = parseLine(raw);
   const color = LEVEL_COLORS[level] ?? "text-zinc-300";
 
@@ -68,7 +64,7 @@ function LogLine({ raw, dimmed }: { raw: string; dimmed: boolean }) {
       <span className="text-zinc-300 break-all">{message}</span>
     </div>
   );
-}
+});
 
 export default function SystemLogsPage() {
   const [source, setSource] = useState("api");
@@ -81,13 +77,13 @@ export default function SystemLogsPage() {
   const [sourceStatus, setSourceStatus] = useState<Record<string, boolean>>({});
 
   const bottomRef = useRef<HTMLDivElement>(null);
-  const esRef = useRef<EventSource | null>(null);
+  const esRef = useRef<{ close: () => void } | null>(null);
 
   // Load snapshot
   const loadSnapshot = useCallback(async () => {
     setLoading(true);
     try {
-      const token = localStorage.getItem("arkon_token");
+      const token = getToken();
       const params = new URLSearchParams({ source, lines: "500" });
       if (level !== "ALL") params.set("level", level);
       const res = await fetch(`${API_BASE}/api/system/logs?${params}`, {
@@ -109,8 +105,7 @@ export default function SystemLogsPage() {
   // Start/stop SSE stream
   const startStream = useCallback(() => {
     esRef.current?.close();
-    const token = localStorage.getItem("arkon_token");
-    const url = `${API_BASE}/api/system/logs/stream?source=${source}&token=${token}`;
+    const token = getToken();
 
     // SSE with auth via query param (EventSource doesn't support headers)
     // Backend must accept token from query if using SSE
@@ -154,13 +149,12 @@ export default function SystemLogsPage() {
 
     fetchStream();
 
-    // Store abort controller to allow stopping
-    (esRef as React.MutableRefObject<unknown>).current = { close: () => controller.abort() };
+    esRef.current = { close: () => controller.abort() };
   }, [source]);
 
   const stopStream = useCallback(() => {
     if (esRef.current) {
-      (esRef.current as { close: () => void }).close();
+      esRef.current.close();
       esRef.current = null;
     }
   }, []);
@@ -173,13 +167,7 @@ export default function SystemLogsPage() {
       loadSnapshot();
     }
     return () => stopStream();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [live, source]);
-
-  useEffect(() => {
-    if (!live) loadSnapshot();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [level]);
+  }, [live, source, level, startStream, stopStream, loadSnapshot]);
 
   useEffect(() => {
     if (autoScroll && bottomRef.current) {
@@ -188,10 +176,9 @@ export default function SystemLogsPage() {
   }, [lines, autoScroll]);
 
   const handleDownload = () => {
-    const token = localStorage.getItem("arkon_token");
+    const token = getToken();
     const a = document.createElement("a");
     a.href = `${API_BASE}/api/system/logs/download?source=${source}`;
-    // Trigger with auth header via fetch + blob
     fetch(a.href, { headers: { Authorization: `Bearer ${token}` } })
       .then((r) => r.blob())
       .then((blob) => {
@@ -203,13 +190,11 @@ export default function SystemLogsPage() {
       });
   };
 
-  const filteredLines =
-    level !== "ALL" && live
-      ? lines.filter((l) => {
-          const tag = `| ${level.padEnd(8)} |`;
-          return l.includes(tag);
-        })
-      : lines;
+  const filteredLines = useMemo(() => {
+    if (level === "ALL") return lines;
+    const tag = `| ${level.padEnd(8)} |`;
+    return lines.filter((l) => l.includes(tag));
+  }, [lines, level]);
 
   return (
     <>
@@ -368,10 +353,7 @@ export default function SystemLogsPage() {
               <LogLine
                 key={i}
                 raw={line}
-                dimmed={
-                  level === "ALL" &&
-                  (line.includes("| DEBUG   ") || line.includes("| DEBUG    |"))
-                }
+                dimmed={level === "ALL" && line.includes("| DEBUG   |")}
               />
             ))
           )}

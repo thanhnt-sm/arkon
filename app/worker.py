@@ -21,22 +21,9 @@ from loguru import logger
 from sqlalchemy import select
 
 from app.config import settings
+from app.utils.logging import setup_file_logging
 
-# ── File logging ──────────────────────────────────────────────────────────────
-_LOG_DIR = os.environ.get("LOG_DIR", "/app/logs")
-_LOG_FILE = "worker.log"
-try:
-    os.makedirs(_LOG_DIR, exist_ok=True)
-    logger.add(
-        os.path.join(_LOG_DIR, _LOG_FILE),
-        rotation="50 MB",
-        retention="14 days",
-        level="DEBUG",
-        enqueue=True,
-        format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {level:<8} | {name}:{function}:{line} | {message}",
-    )
-except Exception as _e:
-    logger.warning(f"Could not enable file logging to {_LOG_DIR}: {_e}")
+setup_file_logging("worker.log")
 
 
 def _get_redis_settings() -> RedisSettings:

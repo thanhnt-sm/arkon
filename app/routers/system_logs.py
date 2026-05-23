@@ -58,7 +58,8 @@ async def get_logs(
     if path is None:
         return {"lines": [], "source": source, "available": False}
 
-    raw = _tail(path, lines)
+    available = path.exists()
+    raw = _tail(path, lines) if available else []
 
     if level:
         tag = f"| {level.upper():<8} |"
@@ -67,7 +68,7 @@ async def get_logs(
     return {
         "lines": raw,
         "source": source,
-        "available": path.exists(),
+        "available": available,
         "total": len(raw),
         "sources": {k: (LOG_DIR / v).exists() for k, v in SOURCES.items()},
     }
@@ -91,8 +92,7 @@ async def stream_logs(
             if line.strip():
                 yield f"data: {json.dumps({'line': line, 'source': source})}\n\n"
 
-        # Heartbeat so browser keeps the connection alive
-        yield "data: {\"ping\": true}\n\n"
+        yield f"data: {json.dumps({'ping': True})}\n\n"
 
         # Tail new content
         try:
@@ -107,14 +107,13 @@ async def stream_logs(
                             yield f"data: {json.dumps({'line': stripped, 'source': source})}\n\n"
                         last_pos = f.tell()
                     else:
-                        # Detect log rotation (new file is smaller than last pos)
-                        try:
-                            current_size = path.stat().st_size
-                            if current_size < last_pos:
-                                f.seek(0)
-                                last_pos = 0
-                        except OSError:
-                            pass
+                        if last_pos > 0:
+                            try:
+                                if path.stat().st_size < last_pos:
+                                    f.seek(0)
+                                    last_pos = 0
+                            except OSError:
+                                pass
                         await asyncio.sleep(0.5)
         except asyncio.CancelledError:
             pass

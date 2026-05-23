@@ -3,7 +3,7 @@
  * All API calls go through this module.
  */
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL !== undefined ? process.env.NEXT_PUBLIC_API_URL : "http://localhost:5055";
+export const API_BASE = process.env.NEXT_PUBLIC_API_URL !== undefined ? process.env.NEXT_PUBLIC_API_URL : "http://localhost:5055";
 const REQUEST_TIMEOUT_MS = 30_000;
 
 type RequestOptions = {
@@ -24,7 +24,7 @@ class ApiError extends Error {
   }
 }
 
-function getToken(): string | null {
+export function getToken(): string | null {
   if (typeof window === "undefined") return null;
   return localStorage.getItem("arkon_token");
 }
