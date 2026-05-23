@@ -3,6 +3,7 @@ Arkon — Enterprise AI Control Center.
 FastAPI application entry point.
 """
 
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -11,6 +12,21 @@ from loguru import logger
 
 from app.config import settings
 from app.mcp.server import create_mcp_server
+
+# ── File logging ──────────────────────────────────────────────────────────────
+_LOG_DIR = os.environ.get("LOG_DIR", "/app/logs")
+try:
+    os.makedirs(_LOG_DIR, exist_ok=True)
+    logger.add(
+        os.path.join(_LOG_DIR, "api.log"),
+        rotation="50 MB",
+        retention="14 days",
+        level="DEBUG",
+        enqueue=True,
+        format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {level:<8} | {name}:{function}:{line} | {message}",
+    )
+except Exception as _e:
+    logger.warning(f"Could not enable file logging to {_LOG_DIR}: {_e}")
 
 # Create the MCP server and its HTTP app (lifespan must be composed with FastAPI)
 mcp_server = create_mcp_server()
@@ -129,6 +145,7 @@ from app.routers import (  # noqa: E402
     skill_contributions,
     skills,
     sources,
+    system_logs,
     wiki,
     wiki_drafts,
     wiki_images,
@@ -148,6 +165,7 @@ app.include_router(knowledge_types.router, prefix="/api", tags=["knowledge-types
 app.include_router(projects.router, prefix="/api", tags=["projects"])
 app.include_router(roles.router, prefix="/api", tags=["roles"])
 app.include_router(audit.router, prefix="/api", tags=["audit"])
+app.include_router(system_logs.router, prefix="/api", tags=["system-logs"])
 app.include_router(skills.router, prefix="/api", tags=["skills"])
 app.include_router(skill_contributions.router, prefix="/api", tags=["skill-contributions"])
 

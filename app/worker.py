@@ -9,6 +9,7 @@ Start with:
 """
 
 import asyncio
+import os
 import uuid
 import zipfile
 from typing import Optional
@@ -20,6 +21,22 @@ from loguru import logger
 from sqlalchemy import select
 
 from app.config import settings
+
+# ── File logging ──────────────────────────────────────────────────────────────
+_LOG_DIR = os.environ.get("LOG_DIR", "/app/logs")
+_LOG_FILE = "worker.log"
+try:
+    os.makedirs(_LOG_DIR, exist_ok=True)
+    logger.add(
+        os.path.join(_LOG_DIR, _LOG_FILE),
+        rotation="50 MB",
+        retention="14 days",
+        level="DEBUG",
+        enqueue=True,
+        format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {level:<8} | {name}:{function}:{line} | {message}",
+    )
+except Exception as _e:
+    logger.warning(f"Could not enable file logging to {_LOG_DIR}: {_e}")
 
 
 def _get_redis_settings() -> RedisSettings:
@@ -910,7 +927,17 @@ async def caption_images_task(ctx: dict, source_id: str):
         registry = ProviderRegistry(session)
         vision_provider = await registry.get_vision()
         if not vision_provider:
-            logger.info("caption_images_task: no vision provider configured, skipping")
+            logger.info("caption_images_task: no vision provider configured, skipping image captioning")
+            # Skip captioning but still chain into MAP-REDUCE to continue ingestion
+            pool = await get_arq_pool()
+            job = await pool.enqueue_job("ingest_map_reduce_task", source_id)
+            if job:
+                source.job_id = job.job_id
+            source.status = "processing"
+            source.progress = 55
+            source.progress_message = "Extraction queued..."
+            await session.commit()
+            logger.info(f"caption_images_task: skipped captioning and enqueued ingest_map_reduce_task for {source_id}")
             return
 
         rows = (await session.execute(

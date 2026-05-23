@@ -10,7 +10,7 @@ x-backend: &backend
   environment:
     - HTTP_PROXY=http://squid:3128
     - HTTPS_PROXY=http://squid:3128
-    - NO_PROXY=localhost,127.0.0.1,postgres,redis,minio,api,worker,worker_skills,frontend
+    - NO_PROXY=localhost,127.0.0.1,postgres,redis,minio,api,worker,worker_skills,frontend,host.docker.internal
   networks:
     - arkon_internal
   read_only: true
@@ -25,6 +25,7 @@ x-backend: &backend
       condition: service_healthy
   volumes:
     - ./temp_uploads:/app/temp_uploads
+    - ./logs:/app/logs
 
 services:
   # ── Infrastructure ────────────────────────────────────────────
