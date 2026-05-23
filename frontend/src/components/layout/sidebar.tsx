@@ -14,6 +14,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { NotificationBell } from "@/components/notifications/notification-bell";
 
 /* ─── Types ─── */
 
@@ -47,6 +48,7 @@ const navSections: NavSection[] = [
     items: [
       { label: "Documents", href: "/knowledge", icon: "description", requiredPermissions: ["doc:read:own_dept", "doc:read:all"] },
       { label: "Wiki", href: "/wiki", icon: "auto_stories", requiredPermissions: ["wiki:read:own_dept", "wiki:read:all"] },
+      { label: "Reviews", href: "/wiki/review", icon: "fact_check", requiredPermissions: ["wiki:read:own_dept", "wiki:read:all"] },
       { label: "AI Skills", href: "/skills", icon: "bolt", requiredPermissions: ["skill:read:own_dept", "skill:read:all"] },
     ],
   },
@@ -63,8 +65,9 @@ const navSections: NavSection[] = [
   {
     id: "system",
     label: "System",
-    requiredPermissions: ["org:audit:read", "org:settings:read"],
+    requiredPermissions: ["org:audit:read", "org:settings:read", "org:settings:manage"],
     items: [
+      { label: "Statistics", href: "/admin/statistics", icon: "analytics", requiredPermissions: ["org:settings:manage"] },
       { label: "Audit Log", href: "/audit", icon: "policy", requiredPermissions: ["org:audit:read"] },
       { label: "System Logs", href: "/system-logs", icon: "terminal", requiredPermissions: ["org:audit:read"] },
       { label: "Settings", href: "/settings", icon: "settings", requiredPermissions: ["org:settings:read"] },
@@ -94,8 +97,20 @@ function useGroupToggle(groupId: string, defaultOpen: boolean) {
 
 /* ─── Helpers ─── */
 
+/** All static nav hrefs — used by isActive to pick the longest prefix match
+ *  so nested links (e.g. /wiki/review) don't also activate their parent (/wiki). */
+const ALL_NAV_HREFS = navSections.flatMap((s) => s.items.map((i) => i.href));
+
 function isActive(href: string, pathname: string) {
-  return href === "/" ? pathname === "/" : pathname.startsWith(href);
+  if (href === "/") return pathname === "/";
+  if (!(pathname === href || pathname.startsWith(href + "/"))) return false;
+  // A more specific sibling matched — defer to it.
+  return !ALL_NAV_HREFS.some(
+    (other) =>
+      other !== href &&
+      other.startsWith(href + "/") &&
+      (pathname === other || pathname.startsWith(other + "/")),
+  );
 }
 
 /** Pick a color for workspace icon based on workspace type */
@@ -325,9 +340,9 @@ function OrgHeader({
   };
 
   return (
-    <div className="px-2 py-1 mb-1">
+    <div className="px-2 py-1 mb-1 flex items-center gap-1">
       <DropdownMenu>
-        <DropdownMenuTrigger className="flex items-center gap-2.5 rounded-md px-1.5 py-1.5 hover:bg-black/[0.03] transition-colors cursor-pointer min-w-0 w-full">
+        <DropdownMenuTrigger className="flex items-center gap-2.5 rounded-md px-1.5 py-1.5 hover:bg-black/[0.03] transition-colors cursor-pointer min-w-0 flex-1">
           <Image
             src="/logo.png"
             alt="Arkon"
@@ -369,6 +384,9 @@ function OrgHeader({
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
+      {/* Notification bell — sits in the sidebar header because the portal
+          layout has no top header bar. */}
+      <NotificationBell />
     </div>
   );
 }

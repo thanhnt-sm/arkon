@@ -194,7 +194,7 @@ async def list_employees(
                 department_id=str(e.department_id),
                 department_name=e.department.name if e.department else "",
                 is_active=e.is_active,
-                has_token=bool(e.mcp_token),
+                has_token=bool(e.mcp_token_hash),
                 last_connected=e.last_connected.isoformat() if e.last_connected else None,
                 custom_role_id=str(e.custom_role_id) if e.custom_role_id else None,
                 custom_role_name=e.custom_role.name if e.custom_role else None,
@@ -279,6 +279,30 @@ async def delete_employee(
     return {"deleted": True}
 
 
+class DepartmentTransfer(BaseModel):
+    department_id: str
+
+
+@router.patch("/employees/{emp_id}/department")
+async def transfer_employee_department(
+    emp_id: str,
+    body: DepartmentTransfer,
+    db: AsyncSession = Depends(get_db),
+    _user: Employee = require_permission("org:employees:manage"),
+):
+    """Move an employee to a different department."""
+    emp = await db.get(Employee, uuid.UUID(emp_id))
+    if not emp:
+        raise HTTPException(404, "Employee not found")
+    dept = await db.get(Department, uuid.UUID(body.department_id))
+    if not dept:
+        raise HTTPException(404, "Department not found")
+    emp.department_id = dept.id
+    await log_audit(db, _user, "update", "employee", str(emp.id), reason=f"moved to dept={dept.name}")
+    await db.flush()
+    return {"id": str(emp.id), "department_id": str(emp.department_id)}
+
+
 @router.patch("/employees/{emp_id}/toggle")
 async def toggle_employee(
     emp_id: str,
@@ -348,15 +372,14 @@ async def get_my_mcp_token(
     current_user: Employee = Depends(get_current_user),
 ):
     """
-    Generate (or show) the current employee's own MCP token.
-    This is the self-service endpoint employees use from their portal.
+    Rotate the current employee's own MCP token.
+
+    Tokens are now stored hashed, so we can never read back the plaintext.
+    Every POST here issues a NEW token and invalidates any previous one —
+    callers must reconfigure their Claude Desktop after every call.
     """
     auth_svc = MCPAuthService(db)
-
-    if not current_user.mcp_token:
-        token = await auth_svc.generate_token(current_user.id)
-    else:
-        token = current_user.mcp_token
+    token = await auth_svc.generate_token(current_user.id)
 
     return TokenResponse(
         token=token,
@@ -385,4 +408,4 @@ async def get_my_mcp_token_status(
     current_user: Employee = Depends(get_current_user),
 ):
     """Check if the current employee has an active MCP token (without revealing it)."""
-    return {"has_token": bool(current_user.mcp_token)}
+    return {"has_token": bool(current_user.mcp_token_hash)}

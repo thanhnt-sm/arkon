@@ -103,3 +103,6 @@ worktrees/
 # Audit metrics counters (runtime state, not source)
 .agent/metrics/audit-counters.json
 .agent/metrics/*.lock
+
+# Nginx (from upstream)
+nginx/

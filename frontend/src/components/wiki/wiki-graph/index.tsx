@@ -6,7 +6,7 @@ import { useRouter } from "next/navigation";
 import { forceX, forceY } from "d3-force";
 import { wikiTypeColor, wikiTypeGroupLabel, wikiTypeIcon } from "../wiki-type-badge";
 import { NodeInput } from "./types";
-import { convexHull, scopeColor, nodeRadius } from "./utils";
+import { nodeRadius } from "./utils";
 
 // react-force-graph-2d uses canvas APIs (no SSR).
 const ForceGraph2D = dynamic(() => import("react-force-graph-2d"), {
@@ -48,6 +48,95 @@ const EDGE_HIGHLIGHT = "#c2652a";
 const LABEL_COLOR = "#3a302a";
 const BG_COLOR = "#faf5ee";
 
+// Above this many scopes the legend grows a filter input + scrollable list.
+// Below it, the flat list is fine and a search box would just add noise.
+const SCOPE_LIST_SCROLL_THRESHOLD = 8;
+
+type ScopeCount = { label: string; count: number; scopeType: string };
+
+function ScopeLegendSection({ scopeCounts }: { scopeCounts: ScopeCount[] }) {
+  const [query, setQuery] = React.useState("");
+  const showFilter = scopeCounts.length > SCOPE_LIST_SCROLL_THRESHOLD;
+
+  const visible = React.useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return scopeCounts;
+    return scopeCounts.filter((s) => s.label.toLowerCase().includes(q));
+  }, [scopeCounts, query]);
+
+  return (
+    <>
+      <div className="mt-2 pt-2 border-t border-border/50 mb-1.5 font-semibold text-foreground text-xs flex items-center justify-between gap-2">
+        <span>Scope</span>
+        <span className="text-[10px] font-normal text-muted-foreground/70 tabular-nums">
+          {showFilter && query
+            ? `${visible.length}/${scopeCounts.length}`
+            : scopeCounts.length}
+        </span>
+      </div>
+      {showFilter && (
+        <div className="mb-1.5 relative">
+          <span
+            className="material-symbols-outlined absolute left-1.5 top-1/2 -translate-y-1/2 text-muted-foreground/60 pointer-events-none"
+            style={{ fontSize: 12 }}
+          >
+            search
+          </span>
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Filter scopes…"
+            className="w-full h-6 pl-5 pr-5 text-[11px] rounded border border-border/60 bg-background/70 focus:bg-background outline-none focus:border-primary/40 transition-colors"
+          />
+          {query && (
+            <button
+              type="button"
+              onClick={() => setQuery("")}
+              className="absolute right-1 top-1/2 -translate-y-1/2 text-muted-foreground/60 hover:text-foreground"
+              aria-label="Clear filter"
+            >
+              <span className="material-symbols-outlined" style={{ fontSize: 12 }}>
+                close
+              </span>
+            </button>
+          )}
+        </div>
+      )}
+      <div
+        className={`flex flex-col gap-1 ${
+          showFilter ? "max-h-44 overflow-y-auto pr-0.5" : ""
+        }`}
+      >
+        {visible.length === 0 ? (
+          <p className="text-[11px] text-muted-foreground/60 italic px-1 py-0.5">
+            No matching scopes.
+          </p>
+        ) : (
+          visible.map(({ label, count, scopeType }) => (
+            <div
+              key={label}
+              className="flex items-center gap-2 rounded px-1 py-0.5 hover:bg-accent/30 transition-colors"
+            >
+              <span
+                className="material-symbols-outlined text-muted-foreground"
+                style={{ fontSize: 12 }}
+              >
+                {scopeType === "project"
+                  ? "folder_special"
+                  : scopeType === "department"
+                  ? "business"
+                  : "public"}
+              </span>
+              <span className="text-muted-foreground truncate">{label}</span>
+              <span className="text-muted-foreground/60 ml-auto tabular-nums">{count}</span>
+            </div>
+          ))
+        )}
+      </div>
+    </>
+  );
+}
+
 export function WikiGraph({
   nodes: rawNodes,
   edges: rawEdges,
@@ -59,6 +148,16 @@ export function WikiGraph({
   const router = useRouter();
   const containerRef = React.useRef<HTMLDivElement>(null);
   const fgRef = React.useRef<ForceGraphInstance>(null);
+  // ForceGraph2D is dynamic(); on first load the chunk can resolve AFTER the
+  // first batch of nodes lands, so fgRef.current is null when the forces effect
+  // first tries to run — leaving default forces (incl. center) active and the
+  // nodes collapse to (0,0). Track readiness via a callback ref so the effect
+  // re-fires once the instance is actually attached.
+  const [fgReady, setFgReady] = React.useState(false);
+  const setFgRef = React.useCallback((instance: ForceGraphInstance | null) => {
+    fgRef.current = instance;
+    setFgReady(!!instance);
+  }, []);
   const [dimensions, setDimensions] = React.useState({ w: 800, h: height ?? 400 });
   // Hover state lives in a ref so canvas redraw callbacks can read it without
   // re-rendering the whole component (which would otherwise reset the sim).
@@ -205,9 +304,9 @@ export function WikiGraph({
 
     fg.d3Force(
       "x",
-      forceX<Node>((d: Node) => d.__targetX ?? 0).strength(0.05)
+      forceX<Node>((d: Node) => d.__targetX ?? 0).strength(0.1)
     );
-    fg.d3Force("y", forceY<Node>(0).strength(0.03));
+    fg.d3Force("y", forceY<Node>(0).strength(0.05));
 
     // Charge stronger for hub nodes so leaves don't pile up on top.
     const charge = fg.d3Force("charge");
@@ -232,7 +331,7 @@ export function WikiGraph({
     }
 
     fg.d3ReheatSimulation();
-  }, [nodes, components, componentTargetX, centerSlug, dimensions.w, dimensions.h, mini]);
+  }, [fgReady, nodes, components, componentTargetX, centerSlug, dimensions.w, dimensions.h, mini]);
 
   // Auto fit-to-canvas when the simulation cools down.
   const hasFitRef = React.useRef(false);
@@ -371,105 +470,6 @@ export function WikiGraph({
     [hoverVersion]
   );
 
-  // --- Scope hulls (workspace boundaries) drawn beneath nodes ---
-  const drawScopeHulls = React.useCallback(
-    (ctx: CanvasRenderingContext2D) => {
-      if (mini) return;
-
-      const drawGroup = (
-        gnodes: Node[],
-        color: string,
-        dash: number[],
-        alpha: string,
-        label: string,
-      ) => {
-        const points: [number, number][] = gnodes.map((n) => [n.x!, n.y!]);
-        const hull = convexHull(points);
-        if (hull.length === 0) return;
-        const padding = 30;
-        const cx = hull.reduce((s, p) => s + p[0], 0) / hull.length;
-        const cy = hull.reduce((s, p) => s + p[1], 0) / hull.length;
-        const expanded =
-          hull.length === 1
-            ? null
-            : hull.map(([x, y]) => {
-                const dx = x - cx;
-                const dy = y - cy;
-                const len = Math.sqrt(dx * dx + dy * dy) || 1;
-                return [x + (dx / len) * padding, y + (dy / len) * padding] as [number, number];
-              });
-
-        ctx.save();
-        ctx.setLineDash(dash);
-        ctx.strokeStyle = color;
-        ctx.lineWidth = 1;
-        ctx.fillStyle = color + alpha;
-        ctx.globalAlpha = 0.85;
-
-        ctx.beginPath();
-        if (expanded == null) {
-          const [x, y] = hull[0];
-          ctx.arc(x, y, padding, 0, 2 * Math.PI);
-        } else if (expanded.length === 2) {
-          const [x1, y1] = expanded[0];
-          const [x2, y2] = expanded[1];
-          ctx.moveTo(x1, y1);
-          ctx.lineTo(x2, y2);
-        } else {
-          const n = expanded.length;
-          const start: [number, number] = [
-            (expanded[n - 1][0] + expanded[0][0]) / 2,
-            (expanded[n - 1][1] + expanded[0][1]) / 2,
-          ];
-          ctx.moveTo(start[0], start[1]);
-          for (let i = 0; i < n; i++) {
-            const curr = expanded[i];
-            const next = expanded[(i + 1) % n];
-            const mx = (curr[0] + next[0]) / 2;
-            const my = (curr[1] + next[1]) / 2;
-            ctx.quadraticCurveTo(curr[0], curr[1], mx, my);
-          }
-          ctx.closePath();
-        }
-        ctx.fill();
-        ctx.stroke();
-        ctx.setLineDash([]);
-
-        const topY = Math.min(...points.map((p) => p[1])) - padding - 6;
-        ctx.fillStyle = color;
-        ctx.font = "600 10px sans-serif";
-        ctx.textAlign = "center";
-        ctx.globalAlpha = 0.7;
-        ctx.fillText(label, cx, topY);
-        ctx.restore();
-      };
-
-      // Department hulls (drawn first, underneath).
-      const deptGroups: Record<string, Node[]> = {};
-      for (const n of nodes) {
-        if (n.scope_type !== "department" || n.x === undefined || n.y === undefined) continue;
-        const key = n.scope_name || "Department";
-        (deptGroups[key] ||= []).push(n);
-      }
-      Object.entries(deptGroups).forEach(([key, gnodes], idx) => {
-        drawGroup(gnodes, scopeColor(idx), [8, 5], "0e", key);
-      });
-
-      // Project hulls (drawn on top, more prominent).
-      const projGroups: Record<string, Node[]> = {};
-      for (const n of nodes) {
-        if (n.scope_type !== "project" || n.x === undefined || n.y === undefined) continue;
-        const key = n.scope_name || "Workspace";
-        (projGroups[key] ||= []).push(n);
-      }
-      const deptCount = Object.keys(deptGroups).length;
-      Object.entries(projGroups).forEach(([key, gnodes], idx) => {
-        drawGroup(gnodes, scopeColor(deptCount + idx), [6, 4], "1e", key);
-      });
-    },
-    [mini, nodes]
-  );
-
   const handleNodeClick = React.useCallback(
     (rawNode: object) => {
       const n = rawNode as Node;
@@ -554,7 +554,7 @@ export function WikiGraph({
       }}
     >
       <ForceGraph2D
-        ref={fgRef}
+        ref={setFgRef}
         width={dimensions.w}
         height={dimensions.h}
         graphData={graphData}
@@ -574,7 +574,6 @@ export function WikiGraph({
         linkWidth={linkWidth}
         onNodeClick={handleNodeClick}
         onNodeHover={handleNodeHover}
-        onRenderFramePre={drawScopeHulls}
         cooldownTicks={mini ? 50 : 90}
         d3AlphaDecay={0.06}
         d3VelocityDecay={0.55}
@@ -661,32 +660,7 @@ export function WikiGraph({
               ))}
           </div>
           {scopeCounts.length > 0 && (
-            <>
-              <div className="mt-2 pt-2 border-t border-border/50 mb-1.5 font-semibold text-foreground text-xs">
-                Scope
-              </div>
-              <div className="flex flex-col gap-1">
-                {scopeCounts.map(({ label, count, scopeType }) => (
-                  <div
-                    key={label}
-                    className="flex items-center gap-2 rounded px-1 py-0.5 hover:bg-accent/30 transition-colors"
-                  >
-                    <span
-                      className="material-symbols-outlined text-muted-foreground"
-                      style={{ fontSize: 12 }}
-                    >
-                      {scopeType === "project"
-                        ? "folder_special"
-                        : scopeType === "department"
-                        ? "business"
-                        : "public"}
-                    </span>
-                    <span className="text-muted-foreground truncate">{label}</span>
-                    <span className="text-muted-foreground/60 ml-auto tabular-nums">{count}</span>
-                  </div>
-                ))}
-              </div>
-            </>
+            <ScopeLegendSection scopeCounts={scopeCounts} />
           )}
         </div>
       )}
