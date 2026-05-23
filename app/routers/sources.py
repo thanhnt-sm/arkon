@@ -800,3 +800,64 @@ async def delete_source(
     await log_audit(db, _user, "delete", "source", str(source.id), reason=source.title)
     await repo.delete_by_id(Source, source_id)
     return {"deleted": True}
+
+
+# ---------------------------------------------------------------------------
+# Phase 3.5 — manual digest regeneration
+# ---------------------------------------------------------------------------
+
+# Naive in-process rate-limit (1/min/source). Worker has 1 process, so this is
+# sufficient for the design goal of preventing accidental regen-spam.
+_REGEN_DIGEST_LAST_CALL: dict[uuid.UUID, float] = {}
+_REGEN_DIGEST_MIN_INTERVAL_S = 60.0
+
+
+@router.post("/sources/{source_id}/regen-digest")
+async def regen_source_digest(
+    source_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    _user: Employee = require_permission("doc:edit"),
+) -> dict:
+    """
+    Re-run Phase 3.5 digest for the given source. Auth-gated, rate-limited
+    1/min/source. Returns the digest slug on success.
+    """
+    import time
+
+    from app.ai.mrp.digest import run_digest_phase
+    from app.ai.registry import ProviderRegistry
+    from app.database.models import SourceCompilationPlan
+
+    now = time.monotonic()
+    last = _REGEN_DIGEST_LAST_CALL.get(source_id, 0.0)
+    if now - last < _REGEN_DIGEST_MIN_INTERVAL_S:
+        retry_after = int(_REGEN_DIGEST_MIN_INTERVAL_S - (now - last))
+        raise HTTPException(
+            status_code=429,
+            detail=f"Digest regen rate-limited; retry in {retry_after}s",
+        )
+    _REGEN_DIGEST_LAST_CALL[source_id] = now
+
+    source = await db.get(Source, source_id)
+    if source is None:
+        raise HTTPException(status_code=404, detail="Source not found")
+
+    plan = (await db.execute(
+        select(SourceCompilationPlan).where(SourceCompilationPlan.source_id == source_id)
+    )).scalar_one_or_none()
+    if plan is None:
+        raise HTTPException(status_code=409, detail="No compilation plan for this source")
+
+    registry = ProviderRegistry(db)
+    llm = await registry.get_llm()
+    slug = await run_digest_phase(
+        session=db,
+        source=source,
+        compilation_plan=plan,
+        llm=llm,
+        profile=getattr(llm, "runtime_profile", None),
+    )
+    await db.commit()
+    await log_audit(db, _user, "regen", "digest", str(source_id), reason=slug or "failed")
+    await db.commit()
+    return {"digest_slug": slug}
