@@ -995,6 +995,12 @@ async def caption_images_task(ctx: dict, source_id: str):
         image_records = [(row.id, row.minio_key, row.content_type) for row in rows]
 
     if not image_records:
+        # No image rows materialized (possible when ingest_file_task committed images
+        # but a downstream crash dropped them, or upload-edge race). Fall through to
+        # MRP so the source still produces wiki content instead of silently stalling.
+        logger.warning(f"caption_images_task: no image rows for {source_id} — chaining to MRP")
+        pool = await get_arq_pool()
+        await pool.enqueue_job("ingest_map_reduce_task", source_id)
         return
 
     logger.info(f"caption_images_task: captioning {len(image_records)} images for {source_id}")

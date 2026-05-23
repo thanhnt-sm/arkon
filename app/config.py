@@ -74,6 +74,12 @@ class Settings(BaseSettings):
         description="If True, compilation plans are auto-approved without human review",
     )
 
+    # --- Upload limits ---
+    max_source_file_mb: int = Field(
+        default=100,
+        description="Reject /sources/upload + /projects/*/sources/upload + /skill-contributions/*/upload above this (MB). 0 disables.",
+    )
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 
     @property

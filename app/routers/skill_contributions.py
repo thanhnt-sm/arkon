@@ -364,7 +364,10 @@ async def upload_skill_contribution_file(
     current_user: Employee = Depends(get_current_user),
 ):
     """Upload a binary file to a skill contribution."""
+    from app.config import settings
     from app.services.storage_service import storage_service
+    from app.utils.file_validation import check_upload_size
+    check_upload_size(file, settings.max_source_file_mb)
     contribution = await db.get(SkillContribution, contribution_id)
     if not contribution:
         raise HTTPException(404, "Contribution not found")

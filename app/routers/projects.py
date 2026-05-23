@@ -799,6 +799,10 @@ async def upload_workspace_source(
     await _get_project_or_404(db, project_id)
     await _require_workspace_role(db, user, project_id, WorkspaceRole.EDITOR.value)
 
+    from app.config import settings
+    from app.utils.file_validation import check_upload_size
+    check_upload_size(file, settings.max_source_file_mb)
+
     pid = uuid.UUID(project_id)
     file_data = await file.read()
     file_name = file.filename or "unknown"

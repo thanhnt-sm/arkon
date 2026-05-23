@@ -302,6 +302,9 @@ async def upload_source(
     db: AsyncSession = Depends(get_db),
     user: Employee = require_permission("doc:create"),
 ):
+    from app.config import settings
+    from app.utils.file_validation import check_upload_size
+    check_upload_size(file, settings.max_source_file_mb)
     file_data = await file.read()
     file_name = file.filename or "unknown"
 
