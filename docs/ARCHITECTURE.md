@@ -86,7 +86,7 @@ Two arq (Redis-based) worker pools:
 - `process_skill_task` — process uploaded skill packages
 
 ### MRP Pipeline (`app/ai/mrp/`)
-The core compilation pipeline — MAP-REDUCE-PLAN-REFINE-VERIFY:
+The core compilation pipeline — six phases (0–5) plus Phase 3.5 DIGEST:
 
 1. **Triage + MAP** (`mapper.py`) — classifies document size (single_pass / standard / hierarchical), splits into ~20K-char chunks aligned to section headings, runs parallel LLM extraction per chunk. Each chunk produces structured JSON (entities, concepts, claims with `absolute_offset` back to source). Results saved to `source_chunk_extracts` incrementally for crash resume.
 

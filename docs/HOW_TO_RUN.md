@@ -191,10 +191,12 @@ Use the `access_token` as `Authorization: Bearer <token>` for all admin API call
 | GET | `/api/auth/me` | Current user profile |
 | POST | `/api/auth/change-password` | Change password |
 
-### Admin (requires `role=admin`)
+### Admin (requires `role=admin` or `org:settings:manage` permission)
 | Method | Path | Description |
 |---|---|---|
 | GET/PUT | `/api/settings` | Provider config (AI keys, models) |
+| GET | `/api/llm-health` | LLM runtime profile snapshot + health status |
+| PATCH | `/api/app-config` | Update operational config (profile, intake paused state) |
 | CRUD | `/api/departments` | Manage departments |
 | CRUD | `/api/employees` | Manage employees |
 | POST/DELETE | `/api/employees/:id/token` | Generate/revoke MCP token |
@@ -204,6 +206,7 @@ Use the `access_token` as `Authorization: Bearer <token>` for all admin API call
 | POST | `/api/sources/upload` | Upload a file |
 | POST | `/api/sources/url` | Add a URL source |
 | POST | `/api/sources/:id/retry` | Retry ingestion for a failed source |
+| POST | `/api/sources/:id/regen-digest` | Re-run Phase 3.5 digest generation for a source (1/min rate limit) |
 | CRUD | `/api/contacts` | Manage contacts |
 
 ### Wiki (requires login)

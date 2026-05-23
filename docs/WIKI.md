@@ -6,7 +6,7 @@ The Arkon wiki is the primary knowledge surface. Instead of storing raw document
 
 ## How compilation works
 
-When you upload a document, the background worker runs the **MRP pipeline** — a five-phase deterministic process that guarantees every section of the document is read and every claim is traceable back to its source.
+When you upload a document, the background worker runs the **MRP pipeline** — a six-phase deterministic process (0–5) that guarantees every section of the document is read and every claim is traceable back to its source. Phase 3.5 DIGEST augments the pipeline after REFINE.
 
 ```
 Phase 0: Triage   → classify document size/strategy
@@ -14,6 +14,7 @@ Phase 1: MAP      → chunk document + parallel LLM extraction per chunk
 Phase 2: REDUCE   → entity dedup + KB reconciliation → Compilation Plan
 Phase 2.5: Review → human approves / modifies / rejects the plan
 Phase 3: REFINE   → parallel page writers (one per planned page)
+Phase 3.5: DIGEST → compile source digest page
 Phase 4: VERIFY   → citation check + coverage check + conflict check
 Phase 5: COMMIT   → write pages to DB + embed + regenerate index
 ```
@@ -89,6 +90,18 @@ Each planned page gets its own writer. Writers run in parallel (up to 4 at once)
 
 Every factual claim in the written content is marked with a `[^N]` footnote citation.
 
+### Phase 3.5 — DIGEST
+
+A single `page_type='digest'` page is generated per source (slug: `digest/<source-slug>`). This augmentation summarizes the entire source document.
+
+Two strategies are available:
+- **Outline-driven** — when `source.outline_json` is populated, creates a narrative per section (H1/H2) via LLM
+- **Flat** — TOC + compilation plan summary + concatenated excerpts from sub-pages, no per-section LLM call
+
+Hardening measures prevent injection attacks: wiki-link allowlist (only slugs in `plan.page_slugs` accepted), HTML/script strip, and recursive size cap (max 4 levels deep). Digest generation is isolated — if it fails, the error is recorded in `source.metadata.digest_failed` but does **not** block the source from becoming `ready`.
+
+See [docs/mrp-ops.md](mrp-ops.md) for manual digest regeneration via `POST /sources/{id}/regen-digest`.
+
 ### Phase 4 — VERIFY
 
 Three non-blocking checks run after REFINE:
@@ -128,6 +141,7 @@ The field `source.pipeline_phase` tracks which phase completed last. If the work
 | `concept` | A process, rule, methodology, or framework |
 | `topic` | A broad subject area |
 | `source` | A page representing the source document itself |
+| `digest` | Comprehensive source summary (auto-generated in Phase 3.5) |
 
 ---
 
