@@ -56,6 +56,7 @@ class EmbeddingSpecOut(BaseModel):
 class EmbeddingCatalogOut(BaseModel):
     active_spec_id: Optional[str]
     specs: list[EmbeddingSpecOut]
+    custom_model_id: Optional[str] = None
 
 
 class EmbeddingJobOut(BaseModel):
@@ -79,6 +80,7 @@ class EmbeddingStatusOut(BaseModel):
 
 class EmbeddingSwitchBody(BaseModel):
     model_spec_id: str
+    custom_model_id: Optional[str] = None  # for openai_compatible/embedding-* specs
 
 
 class EmbeddingSwitchOut(BaseModel):
@@ -144,11 +146,14 @@ async def get_catalog(
     _user: Employee = require_permission("org:settings:manage"),
 ):
     from app.ai.registry import ProviderRegistry
+    from app.services.config_service import ConfigService
 
     registry = ProviderRegistry(db)
     active = await registry.get_active_embedding_spec_id()
+    svc = ConfigService(db)
+    custom_model_id = await svc.get("embedding_custom_model_id")
     specs = [await _spec_to_out(s, db) for s in list_specs()]
-    return EmbeddingCatalogOut(active_spec_id=active, specs=specs)
+    return EmbeddingCatalogOut(active_spec_id=active, specs=specs, custom_model_id=custom_model_id)
 
 
 @router.get("/settings/embeddings/status", response_model=EmbeddingStatusOut)
@@ -214,17 +219,27 @@ async def switch_embedding_model(
             ),
         )
 
-    # Make sure the chosen provider has an API key configured.
     svc = ConfigService(db)
-    api_key = await svc.get(embedding_api_key_for(spec.provider))
-    if not api_key:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"No API key configured for provider '{spec.provider}'. "
-                f"Save the API key first, then switch."
-            ),
-        )
+    is_custom = spec.id.startswith("openai_compatible/embedding-")
+
+    if is_custom:
+        if not body.custom_model_id or not body.custom_model_id.strip():
+            raise HTTPException(
+                status_code=400,
+                detail="custom_model_id is required when switching to an OpenAI-compatible embedding spec.",
+            )
+        await svc.set("embedding_custom_model_id", body.custom_model_id.strip())
+    else:
+        # Make sure the chosen provider has an API key configured.
+        api_key = await svc.get(embedding_api_key_for(spec.provider))
+        if not api_key:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"No API key configured for provider '{spec.provider}'. "
+                    f"Save the API key first, then switch."
+                ),
+            )
 
     job = EmbeddingJob(model_spec_id=spec.id, status="pending")
     db.add(job)

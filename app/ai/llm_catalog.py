@@ -176,6 +176,20 @@ LLM_CATALOG: dict[str, LLMModelSpec] = {
         cost_per_1m_input_tokens=0.15,
         cost_per_1m_output_tokens=0.60,
     ),
+    # --- OpenAI Compatible (custom server) ---
+    "openai_compatible/custom": LLMModelSpec(
+        id="openai_compatible/custom",
+        provider="openai",
+        model_id="custom",  # overridden at runtime from llm_custom_model_id config
+        context_window_tokens=8_192,
+        max_output_tokens=2_048,
+        supports_tools=False,
+        supports_vision=False,
+        label="OpenAI Compatible (Custom)",
+        cost_per_1m_input_tokens=None,
+        cost_per_1m_output_tokens=None,
+        notes="LM Studio, Ollama, vLLM, or any OpenAI-compatible server. Set base URL and model name below. Default assumes 8K context — update context_window_tokens to match your model.",
+    ),
 }
 
 

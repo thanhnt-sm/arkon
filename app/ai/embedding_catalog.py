@@ -80,6 +80,49 @@ EMBEDDING_CATALOG: dict[str, EmbeddingModelSpec] = {
         cost_per_1m_tokens=0.13,
         notes="Highest quality OpenAI embedding. ~6.5x cost of 3-small.",
     ),
+    # --- OpenAI-compatible (LM Studio, Ollama, vLLM, free providers) ---
+    # One entry per supported dimension — pick the one matching your model's output.
+    # The model_id "custom" is a placeholder; the real name is stored in DB at runtime.
+    "openai_compatible/embedding-768": EmbeddingModelSpec(
+        id="openai_compatible/embedding-768",
+        provider="openai",
+        model_id="custom",
+        dimension=768,
+        max_input_tokens=8192,
+        label="OpenAI Compatible (Custom, 768d)",
+        cost_per_1m_tokens=None,
+        notes="LM Studio, Ollama, or any OpenAI-compatible embedding server. Choose the dimension matching your model (e.g. nomic-embed-text → 768d).",
+    ),
+    "openai_compatible/embedding-1024": EmbeddingModelSpec(
+        id="openai_compatible/embedding-1024",
+        provider="openai",
+        model_id="custom",
+        dimension=1024,
+        max_input_tokens=8192,
+        label="OpenAI Compatible (Custom, 1024d)",
+        cost_per_1m_tokens=None,
+        notes="Choose this if your model outputs 1024-dimensional vectors (e.g. mxbai-embed-large-v1).",
+    ),
+    "openai_compatible/embedding-1536": EmbeddingModelSpec(
+        id="openai_compatible/embedding-1536",
+        provider="openai",
+        model_id="custom",
+        dimension=1536,
+        max_input_tokens=8192,
+        label="OpenAI Compatible (Custom, 1536d)",
+        cost_per_1m_tokens=None,
+        notes="Choose this if your model outputs 1536-dimensional vectors.",
+    ),
+    "openai_compatible/embedding-3072": EmbeddingModelSpec(
+        id="openai_compatible/embedding-3072",
+        provider="openai",
+        model_id="custom",
+        dimension=3072,
+        max_input_tokens=8192,
+        label="OpenAI Compatible (Custom, 3072d)",
+        cost_per_1m_tokens=None,
+        notes="Choose this if your model outputs 3072-dimensional vectors.",
+    ),
 }
 
 

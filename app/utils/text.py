@@ -18,19 +18,47 @@ def strip_code_fence(raw: str) -> str:
     return s.strip()
 
 
+def _clean_json_from_llm(s: str) -> str:
+    """
+    Fix common JSON defects produced by local/fine-tuned LLMs:
+      - JS single-line comments: // ...
+      - JS multi-line comments: /* ... */
+      - Trailing commas before } or ]
+    """
+    # Remove /* ... */ block comments
+    s = re.sub(r"/\*.*?\*/", "", s, flags=re.DOTALL)
+    # Remove // line comments (avoid stripping URLs like https://)
+    s = re.sub(r'(?<!:)//[^\n]*', "", s)
+    # Remove trailing commas before } or ]
+    s = re.sub(r",\s*([}\]])", r"\1", s)
+    return s
+
+
 def parse_json_loose(raw: str) -> Any:
     """
-    Parse a JSON value from an LLM response that may be wrapped in a code fence
-    or have trailing prose. Falls back to truncating at the last `}` or `]`.
+    Parse a JSON value from an LLM response that may be wrapped in a code fence,
+    have trailing prose, or contain JS-style defects (comments, trailing commas).
     """
     cleaned = strip_code_fence(raw)
+
+    # First attempt: strict parse on cleaned text
     try:
         return json.loads(cleaned)
     except json.JSONDecodeError:
-        last = max(cleaned.rfind("}"), cleaned.rfind("]"))
-        if last != -1:
-            return json.loads(cleaned[: last + 1])
-        raise
+        pass
+
+    # Second attempt: fix JS-style defects
+    fixed = _clean_json_from_llm(cleaned)
+    try:
+        return json.loads(fixed)
+    except json.JSONDecodeError:
+        pass
+
+    # Final fallback: truncate at last closing bracket (handles trailing prose)
+    last = max(fixed.rfind("}"), fixed.rfind("]"))
+    if last != -1:
+        return json.loads(fixed[: last + 1])
+    raise json.JSONDecodeError("No valid JSON found", cleaned, 0)
 
 
 def slugify(text: str) -> str:

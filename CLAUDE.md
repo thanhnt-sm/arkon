@@ -1,3 +1,7 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
 <!-- rtk-instructions v2 -->
 # RTK (Rust Token Killer) - Token-Optimized Commands
 
@@ -136,6 +140,121 @@ rtk init --global       # Add RTK to ~/.claude/CLAUDE.md
 
 Overall average: **60-90% token reduction** on common development operations.
 <!-- /rtk-instructions -->
+
+---
+
+# Arkon — Development Guide
+
+Arkon is a self-hosted enterprise knowledge management platform that compiles organizational documents into a structured wiki and serves it to LLMs via MCP (Model Context Protocol).
+
+## Development Commands
+
+### Backend (Python / FastAPI)
+
+```bash
+# Install
+pip install -e ".[dev]"
+
+# Run API server (port 5055)
+uvicorn app.main:app --host 0.0.0.0 --port 5055 --reload
+
+# Run background workers (two separate processes required)
+python -m arq app.worker.WorkerSettings          # Wiki compilation worker
+python -m arq app.worker.SkillWorkerSettings     # Skills processing worker
+
+# Database migrations
+alembic upgrade head                             # Apply all migrations
+alembic revision --autogenerate -m "description" # Generate new migration
+alembic downgrade -1                             # Roll back one migration
+
+# Lint
+ruff check app/                                  # Check linting issues
+ruff check app/ --fix                            # Auto-fix safe issues
+ruff format app/                                 # Format code
+
+# Tests
+rtk pytest tests/                               # Run all tests
+rtk pytest tests/path/test_file.py::test_name  # Run single test
+```
+
+### Frontend (Next.js / React)
+
+```bash
+cd frontend
+npm install
+npm run dev        # Dev server at http://localhost:3000
+npm run build      # Production build
+npm run lint       # ESLint check
+```
+
+### Docker (Full Stack)
+
+```bash
+# Start all 7 services (postgres, redis, minio, squid, api, worker, worker_skills, frontend)
+docker compose --env-file .env.docker up -d --build
+
+# View logs for a specific service
+rtk docker logs arkon-api
+rtk docker logs arkon-worker
+```
+
+### Environment Setup
+
+Copy the appropriate env file and configure it before running:
+- **Docker:** `.env.docker.example` → `.env.docker`
+- **Local dev:** `.env.local.example` → `.env.local`
+
+Required: `SECRET_KEY`, `DATABASE_URL`, `REDIS_HOST`, `MINIO_*`, `DEFAULT_ADMIN_EMAIL/PASSWORD`.
+
+## Architecture
+
+### System Overview
+
+```
+Frontend (Next.js :3000) ─── REST API ──► FastAPI (:5055)
+                                              │
+Claude Desktop ──────────── MCP (/mcp) ──────┤
+                                              │
+                          ┌───────────────────┤
+                          ▼                   ▼
+                       PostgreSQL         Redis Queue
+                       (pgvector)              │
+                          │            ┌───────┴──────────┐
+                       MinIO          Wiki Worker    Skills Worker
+                       (files)        (MRP pipeline) (skill processing)
+```
+
+### Key Backend Modules
+
+**`app/ai/`** — All LLM integration lives here.
+- `mrp/` — The **MRP pipeline** (Map → Reduce → Plan-review → Refine → Verify → Commit): the core document-to-wiki compilation engine. Each phase is a separate step run by the wiki worker.
+- `llm_catalog.py` / `embedding_catalog.py` — Provider-agnostic model registries (Anthropic, Google, OpenAI). Configured at runtime via admin settings, not hardcoded.
+- `wiki_compiler.py` — Orchestrates MRP phases; determines whether to create a new wiki page or merge into an existing one.
+
+**`app/worker.py`** — Arq-based background workers. Two separate `WorkerSettings` classes: `WorkerSettings` (wiki jobs) and `SkillWorkerSettings` (skill processing). Jobs are enqueued from API routers and consumed here.
+
+**`app/routers/`** — FastAPI routers, one file per domain. `wiki_drafts.py` handles the propose → review → approve workflow; `sources.py` handles document upload and ingestion triggering.
+
+**`app/services/permission_engine.py`** — RBAC enforcement. Permissions are evaluated against a hierarchy: role → department → project → knowledge type. All wiki reads and writes pass through this engine.
+
+**`app/mcp/`** — FastMCP server mounted at `/mcp`. `tools.py` exposes `search_wiki`, `read_wiki_page`, `propose_wiki_edit`, etc. Access is gated by MCP tokens (scoped, not full user auth).
+
+**`app/database/models.py`** — SQLAlchemy 2.0 async ORM. Key models: `WikiPage` (content + pgvector embedding), `Source` (uploaded documents), `Project`, `Department`, `KnowledgeType`, `MCPToken`, `AuditLog`.
+
+### Data Flow: Document → Wiki Page
+
+1. Admin uploads a document via the frontend (stored in MinIO via `app/services/storage_service.py`)
+2. Upload triggers a wiki compilation job enqueued to Redis
+3. Wiki Worker picks up the job and runs the MRP pipeline (`app/ai/mrp/`)
+4. Each MRP phase calls the configured LLM; the Plan-review phase decides whether to create a new page or merge into an existing one
+5. The final `WikiPage` is written to PostgreSQL with a pgvector embedding for semantic search
+6. All changes are recorded in `AuditLog`
+
+### Frontend Structure
+
+Next.js 16 App Router with React 19. Pages in `frontend/src/app/`, reusable UI in `frontend/src/components/`. Components follow shadcn conventions with Tailwind CSS 4. API calls use typed fetch wrappers in `frontend/src/lib/`.
+
+---
 
 # Arkon MCP — Knowledge Base Access
 

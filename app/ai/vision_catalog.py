@@ -75,6 +75,17 @@ VISION_CATALOG: dict[str, VisionModelSpec] = {
         cost_per_1m_input_tokens=0.15,
         cost_per_image=None,
     ),
+    # --- OpenAI-compatible (LM Studio, Ollama, vLLM, free providers) ---
+    "openai_compatible/vision-custom": VisionModelSpec(
+        id="openai_compatible/vision-custom",
+        provider="openai",
+        model_id="custom",  # overridden at runtime from vision_custom_model_id config
+        max_image_size_mb=20,
+        label="OpenAI Compatible (Custom Vision)",
+        cost_per_1m_input_tokens=None,
+        cost_per_image=None,
+        notes="LM Studio, Ollama, vLLM, or any OpenAI-compatible vision server. Set base URL and model name below.",
+    ),
 }
 
 

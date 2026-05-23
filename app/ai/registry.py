@@ -121,7 +121,7 @@ class ProviderRegistry:
 
         svc = ConfigService(self.db)
         spec_id = await svc.get(ACTIVE_EMBEDDING_MODEL_KEY)
-        if spec_id and spec_id in EMBEDDING_CATALOG:
+        if spec_id and (spec_id in EMBEDDING_CATALOG or spec_id.startswith("openai_compatible/embedding-")):
             return spec_id
         return None
 
@@ -167,7 +167,7 @@ class ProviderRegistry:
 
         svc = ConfigService(self.db)
         spec_id = await svc.get(ACTIVE_VISION_MODEL_KEY)
-        if spec_id and spec_id in VISION_CATALOG:
+        if spec_id and (spec_id in VISION_CATALOG or spec_id == "openai_compatible/vision-custom"):
             return spec_id
         legacy_provider = await svc.get("vision_provider")
         legacy_model = await svc.get("vision_model_id")
@@ -241,10 +241,20 @@ class ProviderRegistry:
         )
         base_url = await svc.get("embedding_base_url")
 
+        model_id = spec.model_id
+        if spec.id.startswith("openai_compatible/embedding-"):
+            custom_model_id = await svc.get("embedding_custom_model_id") or ""
+            if not custom_model_id:
+                raise ValueError(
+                    "OpenAI Compatible embedding is selected but no model name is configured. "
+                    "Enter the model name in Settings → Embedding."
+                )
+            model_id = custom_model_id
+
         return ProviderConfig(
             provider=ProviderType(spec.provider),
             api_key=api_key,
-            model_id=spec.model_id,
+            model_id=model_id,
             base_url=base_url,
             dimensions=spec.dimension,
             extra={"spec_id": spec.id},
@@ -269,10 +279,22 @@ class ProviderRegistry:
         api_key = await svc.get("llm_api_key") or ""
         base_url = await svc.get("llm_base_url")
 
+        # For the custom OpenAI-compatible spec, the model_id comes from DB,
+        # not from the catalog (which has a placeholder "custom").
+        model_id = spec.model_id
+        if spec_id == "openai_compatible/custom":
+            custom_model_id = await svc.get("llm_custom_model_id") or ""
+            if not custom_model_id:
+                raise ValueError(
+                    "OpenAI Compatible is selected but no model name is configured. "
+                    "Enter the model name in Settings → LLM."
+                )
+            model_id = custom_model_id
+
         return ProviderConfig(
             provider=ProviderType(spec.provider),
             api_key=api_key,
-            model_id=spec.model_id,
+            model_id=model_id,
             base_url=base_url,
             extra={"spec_id": spec.id},
             spec=spec,
@@ -292,10 +314,20 @@ class ProviderRegistry:
         api_key = await svc.get("vision_api_key") or ""
         base_url = await svc.get("vision_base_url")
 
+        model_id = spec.model_id
+        if spec.id == "openai_compatible/vision-custom":
+            custom_model_id = await svc.get("vision_custom_model_id") or ""
+            if not custom_model_id:
+                raise ValueError(
+                    "OpenAI Compatible vision is selected but no model name is configured. "
+                    "Enter the model name in Settings → Vision."
+                )
+            model_id = custom_model_id
+
         return ProviderConfig(
             provider=ProviderType(spec.provider),
             api_key=api_key,
-            model_id=spec.model_id,
+            model_id=model_id,
             base_url=base_url,
             extra={"spec_id": spec.id},
             spec=spec,

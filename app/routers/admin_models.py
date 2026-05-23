@@ -13,7 +13,7 @@ settings UI can use the same dropdown pattern for all three capabilities.
 
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -24,6 +24,7 @@ from app.services.auth_service import require_permission
 
 router = APIRouter()
 
+CUSTOM_SPEC_ID = "openai_compatible/custom"
 
 # ---------------------------------------------------------------------------
 # Schemas
@@ -47,6 +48,7 @@ class LLMSpecOut(BaseModel):
 class LLMCatalogOut(BaseModel):
     active_spec_id: Optional[str]
     specs: list[LLMSpecOut]
+    custom_model_id: Optional[str] = None
 
 
 class VisionSpecOut(BaseModel):
@@ -64,10 +66,12 @@ class VisionSpecOut(BaseModel):
 class VisionCatalogOut(BaseModel):
     active_spec_id: Optional[str]
     specs: list[VisionSpecOut]
+    custom_model_id: Optional[str] = None
 
 
 class SwitchBody(BaseModel):
     model_spec_id: str
+    custom_model_id: Optional[str] = None  # for openai_compatible/custom only
 
 
 # ---------------------------------------------------------------------------
@@ -87,6 +91,7 @@ async def get_llm_catalog(
     active = await registry.get_active_llm_spec_id()
     svc = ConfigService(db)
     api_key_configured = bool(await svc.get("llm_api_key"))
+    custom_model_id = await svc.get("llm_custom_model_id")
 
     specs = [
         LLMSpecOut(
@@ -105,7 +110,7 @@ async def get_llm_catalog(
         )
         for s in list_specs()
     ]
-    return LLMCatalogOut(active_spec_id=active, specs=specs)
+    return LLMCatalogOut(active_spec_id=active, specs=specs, custom_model_id=custom_model_id)
 
 
 @router.post("/settings/llm/switch")
@@ -123,19 +128,76 @@ async def switch_llm_model(
         raise HTTPException(status_code=400, detail=str(e))
 
     svc = ConfigService(db)
-    if not await svc.get("llm_api_key"):
+
+    # OpenAI-compatible custom spec doesn't require an API key (LM Studio, Ollama, etc.)
+    is_custom = spec.id == CUSTOM_SPEC_ID
+    if not is_custom and not await svc.get("llm_api_key"):
         raise HTTPException(
             status_code=400,
             detail="No LLM API key configured. Save the API key first, then switch.",
         )
 
+    if is_custom:
+        if not body.custom_model_id or not body.custom_model_id.strip():
+            raise HTTPException(
+                status_code=400,
+                detail="custom_model_id is required when switching to openai_compatible/custom.",
+            )
+        await svc.set("llm_custom_model_id", body.custom_model_id.strip())
+
     await svc.set(ACTIVE_LLM_MODEL_KEY, spec.id)
     await log_audit(
         db, _user, "switch_llm_model", "settings", "global",
-        reason=f"Switching active LLM to {spec.id}",
+        reason=f"Switching active LLM to {spec.id}"
+        + (f" model={body.custom_model_id}" if is_custom else ""),
     )
     await db.commit()
     return {"active_spec_id": spec.id}
+
+
+@router.get("/settings/llm/custom/models")
+async def list_custom_models(
+    base_url: str = Query(..., description="Base URL of the OpenAI-compatible server"),
+    api_key: str = Query(default="", description="API key (optional, e.g. 'lm-studio')"),
+    _user: Employee = require_permission("org:settings:manage"),
+):
+    """
+    Fetch the list of available models from an OpenAI-compatible server (e.g. LM Studio).
+    Calls GET {base_url}/models and returns model IDs.
+    """
+    import httpx
+
+    url = base_url.rstrip("/") + "/models"
+    headers = {}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(url, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+    except httpx.ConnectError:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Cannot connect to {url}. Make sure the server is running and the URL is correct.",
+        )
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=504, detail=f"Connection to {url} timed out.")
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Error fetching models: {e}")
+
+    models = []
+    if isinstance(data, dict) and "data" in data:
+        for m in data["data"]:
+            if isinstance(m, dict) and "id" in m:
+                models.append({"id": m["id"], "label": m.get("id", m["id"])})
+    elif isinstance(data, list):
+        for m in data:
+            if isinstance(m, dict) and "id" in m:
+                models.append({"id": m["id"], "label": m.get("id", m["id"])})
+
+    return {"models": models, "url": url}
 
 
 # ---------------------------------------------------------------------------
@@ -155,6 +217,7 @@ async def get_vision_catalog(
     active = await registry.get_active_vision_spec_id()
     svc = ConfigService(db)
     api_key_configured = bool(await svc.get("vision_api_key"))
+    custom_model_id = await svc.get("vision_custom_model_id")
 
     specs = [
         VisionSpecOut(
@@ -170,7 +233,7 @@ async def get_vision_catalog(
         )
         for s in list_specs()
     ]
-    return VisionCatalogOut(active_spec_id=active, specs=specs)
+    return VisionCatalogOut(active_spec_id=active, specs=specs, custom_model_id=custom_model_id)
 
 
 @router.post("/settings/vision/switch")
@@ -182,22 +245,35 @@ async def switch_vision_model(
     from app.ai.vision_catalog import UnknownVisionModel, get_spec
     from app.services.config_service import ACTIVE_VISION_MODEL_KEY, ConfigService
 
+    VISION_CUSTOM_SPEC_ID = "openai_compatible/vision-custom"
+
     try:
         spec = get_spec(body.model_spec_id)
     except UnknownVisionModel as e:
         raise HTTPException(status_code=400, detail=str(e))
 
     svc = ConfigService(db)
-    if not await svc.get("vision_api_key"):
-        raise HTTPException(
-            status_code=400,
-            detail="No vision API key configured. Save the API key first, then switch.",
-        )
+    is_custom = spec.id == VISION_CUSTOM_SPEC_ID
+
+    if is_custom:
+        if not body.custom_model_id or not body.custom_model_id.strip():
+            raise HTTPException(
+                status_code=400,
+                detail="custom_model_id is required when switching to openai_compatible/vision-custom.",
+            )
+        await svc.set("vision_custom_model_id", body.custom_model_id.strip())
+    else:
+        if not await svc.get("vision_api_key"):
+            raise HTTPException(
+                status_code=400,
+                detail="No vision API key configured. Save the API key first, then switch.",
+            )
 
     await svc.set(ACTIVE_VISION_MODEL_KEY, spec.id)
     await log_audit(
         db, _user, "switch_vision_model", "settings", "global",
-        reason=f"Switching active vision model to {spec.id}",
+        reason=f"Switching active vision model to {spec.id}"
+        + (f" model={body.custom_model_id}" if is_custom else ""),
     )
     await db.commit()
     return {"active_spec_id": spec.id}

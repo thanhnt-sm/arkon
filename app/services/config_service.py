@@ -66,11 +66,16 @@ ALL_CONFIG_KEYS = [
     ACTIVE_LLM_MODEL_KEY,        # canonical spec_id from LLM_CATALOG
     "llm_api_key",               # Provider API key
     "llm_base_url",              # Custom endpoint
+    "llm_custom_model_id",       # Model name for openai_compatible/custom spec
 
     # --- Vision (catalog-driven; old vision_provider/vision_model_id kept below) ---
     ACTIVE_VISION_MODEL_KEY,     # canonical spec_id from VISION_CATALOG
     "vision_api_key",            # Provider API key (or empty = same as embedding)
     "vision_base_url",           # Custom endpoint
+    "vision_custom_model_id",    # Model name for openai_compatible/vision-custom spec
+
+    # --- Embedding (custom OpenAI-compatible) ---
+    "embedding_custom_model_id", # Model name for openai_compatible/embedding-* specs
 
     # --- Deprecated LLM/Vision free-form keys (read-only for backward compat) ---
     "llm_provider",

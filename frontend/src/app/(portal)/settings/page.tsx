@@ -93,6 +93,7 @@ export default function SettingsPage() {
           catalogUrl="/api/settings/vision/catalog"
           switchUrl="/api/settings/vision/switch"
           apiKeyConfigKey="vision_api_key"
+          customSpecId="openai_compatible/vision-custom"
           renderMeta={visionMeta}
         />
       </div>
