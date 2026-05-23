@@ -147,6 +147,83 @@ async def test_vision(db: AsyncSession = Depends(get_db)):
 
 
 # ---------------------------------------------------------------------------
+# LLM runtime health (Phase 4) — admin only
+# ---------------------------------------------------------------------------
+
+@router.get("/llm-health")
+async def get_llm_health(
+    db: AsyncSession = Depends(get_db),
+    _user: Employee = require_permission("org:settings:manage"),
+) -> dict:
+    """
+    Snapshot of LM Studio liveness + active runtime profile knobs.
+    Admin-only because it leaks operational fingerprint (model name, base url).
+    """
+    from app.ai.mrp.pipeline import get_health_snapshot
+    from app.services.config_service import ConfigService
+
+    cfg = ConfigService(db)
+    snap = get_health_snapshot()
+    return {
+        "profile": await cfg.get("llm_profile"),
+        "context_length": await cfg.get("llm_context_length"),
+        "model_name": await cfg.get("llm_model_name"),
+        "intake_paused": (await cfg.get("mrp.intake_paused")) == "true",
+        **snap,
+    }
+
+
+# ---------------------------------------------------------------------------
+# App config PATCH (Phase 9) — admin only, allowlisted keys
+# ---------------------------------------------------------------------------
+
+_ALLOWED_PATCH_KEYS = {"llm_profile", "mrp.intake_paused"}
+
+
+class AppConfigPatch(BaseModel):
+    """Partial app-config update body. Only allowlisted keys are honored."""
+    updates: dict[str, str]
+
+
+@router.patch("/app-config")
+async def patch_app_config(
+    body: AppConfigPatch,
+    db: AsyncSession = Depends(get_db),
+    _user: Employee = require_permission("org:settings:manage"),
+) -> dict:
+    """
+    Update a small set of operational config keys.
+    On `llm_profile` change, invalidates the runtime-profile cache so the
+    next ingest sees the new value within 1 request (not 60s TTL).
+    """
+    from app.services.config_service import ConfigService
+
+    cfg = ConfigService(db)
+    applied: dict[str, str] = {}
+    for k, v in body.updates.items():
+        if k not in _ALLOWED_PATCH_KEYS:
+            continue
+        await cfg.set(k, str(v))
+        applied[k] = str(v)
+
+    await db.commit()
+
+    if "llm_profile" in applied:
+        try:
+            from app.ai.runtime_profile import invalidate
+            invalidate()
+        except Exception:
+            pass
+
+    await log_audit(
+        db, _user, "patch", "app-config", "global",
+        reason=f"Updated keys: {', '.join(applied.keys()) or 'none'}",
+    )
+    await db.commit()
+    return {"updated": applied}
+
+
+# ---------------------------------------------------------------------------
 # Supported providers list (for admin UI dropdowns)
 # ---------------------------------------------------------------------------
 

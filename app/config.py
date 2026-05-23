@@ -73,6 +73,9 @@ class Settings(BaseSettings):
         default=False,
         description="If True, compilation plans are auto-approved without human review",
     )
+    mrp_timeout_dedup: int = Field(default=300, description="Timeout (s) for entity deduplication LLM call")
+    mrp_timeout_reconcile: int = Field(default=180, description="Timeout (s) for KB reconciliation LLM call")
+    mrp_timeout_planning: int = Field(default=600, description="Timeout (s) for compilation plan LLM call")
 
     # --- Upload limits ---
     max_source_file_mb: int = Field(
