@@ -1,0 +1,22 @@
+diff --git a/frontend/package.json b/frontend/package.json
+index aaaaaaa..bbbbbbb 100644
+--- a/frontend/package.json
++++ b/frontend/package.json
+@@ -10,6 +10,7 @@
+   "dependencies": {
+     "react": "^18.0.0",
+     "next": "^14.0.0",
++    "posthog-js": "^1.100.0",
+     "react-dom": "^18.0.0"
+   }
+ }
+diff --git a/frontend/src/app/layout.tsx b/frontend/src/app/layout.tsx
+index ccccccc..ddddddd 100644
+--- a/frontend/src/app/layout.tsx
++++ b/frontend/src/app/layout.tsx
+@@ -1,4 +1,5 @@
+ import "./globals.css";
++import posthog from "posthog-js";
+
+ export default function RootLayout({ children }: { children: React.ReactNode }) {
+   return (

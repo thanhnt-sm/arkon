@@ -1,0 +1,16 @@
+diff --git a/frontend/src/app/layout.tsx b/frontend/src/app/layout.tsx
+index fff1111..ggg2222 100644
+--- a/frontend/src/app/layout.tsx
++++ b/frontend/src/app/layout.tsx
+@@ -1,5 +1,11 @@
+ import "./globals.css";
+
++export const fonts = (
++  <link
++    rel="stylesheet"
++    href="https://fonts.googleapis.com/css2?family=Inter&display=swap"
++  />
++);
++
+ export default function RootLayout({ children }: { children: React.ReactNode }) {
+   return (

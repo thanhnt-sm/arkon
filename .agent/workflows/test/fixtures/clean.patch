@@ -1,0 +1,21 @@
+diff --git a/src/lib/utils.ts b/src/lib/utils.ts
+index 1111111..2222222 100644
+--- a/src/lib/utils.ts
++++ b/src/lib/utils.ts
+@@ -1,5 +1,8 @@
+ export function clamp(n: number, lo: number, hi: number): number {
+   return Math.max(lo, Math.min(hi, n));
+ }
++
++export function isEven(n: number): boolean {
++  return n % 2 === 0;
++}
+diff --git a/README.md b/README.md
+index 3333333..4444444 100644
+--- a/README.md
++++ b/README.md
+@@ -10,3 +10,4 @@ A note-taking tool.
+ ## Install
+
+ npm install
++(updated readme)
