@@ -126,10 +126,32 @@ class ProviderRegistry:
         return None
 
     async def get_llm(self) -> LLMProvider:
-        """Get the configured LLM provider."""
+        """Get the configured LLM provider with runtime profile attached."""
         config = await self._load_llm_config()
         cls = _get_llm_class(config.provider)
-        return cls(config)
+        instance = cls(config)
+
+        # Attach LLMRuntimeProfile snapshot — drives retry budget, timeouts,
+        # concurrency in mapper/pipeline. Module-scope cache + lock so all
+        # ProviderRegistry instances share the same view.
+        try:
+            from app.ai.runtime_profile import ensure_profile_loaded
+            from app.services.config_service import ConfigService
+
+            cfg_svc = ConfigService(self.db)
+            profile = await ensure_profile_loaded(
+                cfg_svc,
+                llm_client=getattr(instance, "client", None),
+                llm_model_id=config.model_id,
+                llm_base_url=config.base_url,
+            )
+            # Attach as attribute; openai_provider reads instance.runtime_profile
+            instance.runtime_profile = profile  # type: ignore[attr-defined]
+        except Exception as exc:
+            logger.warning(f"runtime_profile attach failed: {exc}")
+            instance.runtime_profile = None  # type: ignore[attr-defined]
+
+        return instance
 
     async def get_active_llm_spec_id(self) -> Optional[str]:
         """Return the spec_id currently active for LLM, or None if unset."""
