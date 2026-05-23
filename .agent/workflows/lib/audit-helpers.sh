@@ -2,7 +2,7 @@
 # audit-helpers.sh
 # Shared helpers for run_audit.sh and related audit scripts.
 # Sourced; not executable on its own.
-# Bash 4+ required (associative arrays, mapfile).
+# Bash 3.2 compatible — no associative arrays, no mapfile.
 
 # Guard against double-source.
 if [ -n "${ARKON_AUDIT_HELPERS_LOADED:-}" ]; then
@@ -71,12 +71,13 @@ ALLOWED_AI_HOSTS=(
   'api\.groq\.com'
 )
 
-# Build alternation pattern for grep -E. Hosts already escaped.
-_join_alternation() {
+# Join args with `|` for use in `grep -E` alternations. Shared by helpers
+# that need ALLOWED_AI_HOSTS / PII_KEYWORDS turned into a regex group.
+join_pipe() {
   local IFS='|'
   echo "$*"
 }
-ALLOWED_HOSTS_PATTERN="$(_join_alternation "${ALLOWED_AI_HOSTS[@]}")"
+ALLOWED_HOSTS_PATTERN="$(join_pipe "${ALLOWED_AI_HOSTS[@]}")"
 
 # Quoted URL literal must contain a whitelisted host (or be a relative /api/ path).
 # Matches strings like "https://api.openai.com/v1/...", '/api/users', `https://localhost:3000/x`.

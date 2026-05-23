@@ -38,12 +38,9 @@ PII_KEYWORDS=(
   api_key
 )
 
-# Build a single grep-E alternation for matching.
-_pii_re_join() {
-  local IFS='|'
-  echo "$*"
-}
-PII_KEYWORD_RE="$(_pii_re_join "${PII_KEYWORDS[@]}")"
+# Build a single grep -E alternation for matching. Uses join_pipe from
+# audit-helpers.sh (sourced above).
+PII_KEYWORD_RE="$(join_pipe "${PII_KEYWORDS[@]}")"
 
 # Network entrypoints that ship a body — `fetch(...)`, `axios.post(...)`,
 # `requests.post(...)`, `httpx.post(...)`, `sendBeacon(...)`, WebSocket sends.

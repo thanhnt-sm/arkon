@@ -192,22 +192,22 @@ log "   pid=$$ log=$LOG_FILE"
 log "   Ctrl+C to stop."
 
 # Tail watcher events line-by-line; each line triggers debounce + audit.
+handle_events() {
+    while read -r _; do
+        log "🔄 event on $WATCH_FILE"
+        date +%s > "$HISTORY_DIR/.watch_event"
+        debounce_then_run
+    done
+}
+
 case "$WATCHER" in
     fswatch)
         # -o: count-only event lines. Each line = "one or more events".
-        fswatch -o "$WATCH_FILE" 2>/dev/null | while read -r _; do
-            log "🔄 event on $WATCH_FILE"
-            date +%s > "$HISTORY_DIR/.watch_event"
-            debounce_then_run
-        done
+        fswatch -o "$WATCH_FILE" 2>/dev/null | handle_events
         ;;
     inotifywait)
         # -m: monitor (no exit). -q: quiet. -e modify,close_write,move_self.
-        inotifywait -m -q -e modify,close_write,move_self "$WATCH_FILE" 2>/dev/null | while read -r _; do
-            log "🔄 event on $WATCH_FILE"
-            date +%s > "$HISTORY_DIR/.watch_event"
-            debounce_then_run
-        done
+        inotifywait -m -q -e modify,close_write,move_self "$WATCH_FILE" 2>/dev/null | handle_events
         ;;
 esac
 

@@ -25,7 +25,7 @@ PATCH_FILE="$HISTORY_DIR/${TIMESTAMP}_${REMOTE}_${BRANCH}.patch"
 # SYNC_MODE=dryrun → fetch + archive only, no interactive prompt, no merge.
 # Used by ck:sync-audit-upstream skill for pre-merge analysis.
 SYNC_MODE=${SYNC_MODE:-interactive}
-REPORTS_GLOB="plans/reports/sync-audit-*.md"
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
 mkdir -p "$HISTORY_DIR"
 
@@ -117,7 +117,7 @@ if [ "$MODE_FLAG" = "--merge" ]; then
         echo "❌ No audit report found with upstream_sha: ${SHORT_SHA}"
         echo "   Required: run a dry-run audit first:"
         echo "     SYNC_MODE=dryrun bash $0 $REMOTE $BRANCH"
-        echo "     AUDIT_PATCH_FILE=$PATCH_FILE bash $(dirname "$0")/run_audit.sh"
+        echo "     AUDIT_PATCH_FILE=$PATCH_FILE bash $SCRIPT_DIR/run_audit.sh"
         echo "   Then generate a report with frontmatter:"
         echo "     upstream_sha: ${UPSTREAM_SHA}"
         echo "     audit_status: PASS"
@@ -141,9 +141,8 @@ if [ "$MODE_FLAG" = "--merge" ]; then
     git merge "$REMOTE_REF"
     echo "🎉 Merge complete. Post-merge audit runs via git hook if installed."
     # Best-effort: record merged state in the forensic index.
-    SCRIPT_DIR_INNER="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-    if [ -z "${ARKON_AUDIT_NO_INDEX:-}" ] && [ -x "$SCRIPT_DIR_INNER/append_index.sh" ]; then
-        bash "$SCRIPT_DIR_INNER/append_index.sh" \
+    if [ -z "${ARKON_AUDIT_NO_INDEX:-}" ] && [ -x "$SCRIPT_DIR/append_index.sh" ]; then
+        bash "$SCRIPT_DIR/append_index.sh" \
             "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             "$UPSTREAM_SHA" \
             "$PATCH_FILE" \
@@ -159,9 +158,8 @@ if [ "$SYNC_MODE" = "dryrun" ]; then
     echo "ℹ️  Dry-run mode: diff archived, no merge executed."
     echo "PATCH_FILE=$PATCH_FILE"
     # Best-effort: record this dry-run in the forensic index.
-    SCRIPT_DIR_INNER="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-    if [ -z "${ARKON_AUDIT_NO_INDEX:-}" ] && [ -x "$SCRIPT_DIR_INNER/append_index.sh" ]; then
-        bash "$SCRIPT_DIR_INNER/append_index.sh" \
+    if [ -z "${ARKON_AUDIT_NO_INDEX:-}" ] && [ -x "$SCRIPT_DIR/append_index.sh" ]; then
+        bash "$SCRIPT_DIR/append_index.sh" \
             "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             "$REMOTE_REF" \
             "$PATCH_FILE" \
@@ -179,7 +177,7 @@ case "$choice" in
     echo "✅ Merging $REMOTE/$BRANCH..."
     git merge "$REMOTE_REF"
     echo "🎉 Sync complete. Running security audit..."
-    bash "$(dirname "$0")/run_audit.sh"
+    bash "$SCRIPT_DIR/run_audit.sh"
     ;;
   * )
     echo "❌ Merge aborted. Diff archived at $PATCH_FILE for reference."

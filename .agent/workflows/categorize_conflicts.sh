@@ -205,20 +205,27 @@ while IFS= read -r f; do
 done <<< "$SORTED_FILES"
 
 # ─── Output ───────────────────────────────────────────────────────────────
+# Stitch the per-file JSON entries into a single array literal (no trailing
+# newline — caller decides). Empty array stays empty.
+print_results_json() {
+  if [ "${#RESULTS[@]}" -eq 0 ]; then
+    printf '[]'
+    return
+  fi
+  printf '['
+  local i=0
+  while [ "$i" -lt "${#RESULTS[@]}" ]; do
+    [ "$i" -gt 0 ] && printf ','
+    printf '%s' "${RESULTS[$i]}"
+    i=$((i+1))
+  done
+  printf ']'
+}
+
 case "$OUTPUT_FORMAT" in
   json)
-    if [ "${#RESULTS[@]}" -eq 0 ]; then
-      echo "[]"
-    else
-      printf '['
-      i=0
-      while [ "$i" -lt "${#RESULTS[@]}" ]; do
-        [ "$i" -gt 0 ] && printf ','
-        printf '%s' "${RESULTS[$i]}"
-        i=$((i+1))
-      done
-      printf ']\n'
-    fi
+    print_results_json
+    printf '\n'
     ;;
   csv)
     echo "file,category,local_loc,upstream_loc,local_commits,upstream_commits,last_local_change,last_upstream_change,ext,size_bytes"
@@ -230,18 +237,7 @@ case "$OUTPUT_FORMAT" in
     if [ "${#RESULTS[@]}" -eq 0 ]; then
       echo "total: 0"
     else
-      # Build full JSON in a subshell, pipe to jq for aggregation.
-      JSON_BLOB=$(
-        printf '['
-        i=0
-        while [ "$i" -lt "${#RESULTS[@]}" ]; do
-          [ "$i" -gt 0 ] && printf ','
-          printf '%s' "${RESULTS[$i]}"
-          i=$((i+1))
-        done
-        printf ']'
-      )
-      echo "$JSON_BLOB" | jq -r '
+      print_results_json | jq -r '
         group_by(.category)
         | map({key: .[0].category, value: length})
         | from_entries

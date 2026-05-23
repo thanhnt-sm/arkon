@@ -132,14 +132,12 @@ for req in requirements.txt requirements-dev.txt requirements-prod.txt; do
 done
 
 if [ -f pyproject.toml ]; then
+  # Matches both PEP 621 quoted form (`"pkg" = ...`) and poetry style
+  # (`pkg = "x.y"` inside [tool.poetry.dependencies]) via optional quotes.
   for pkg in "${FORBIDDEN_PKG_NAMES[@]}"; do
     if grep -Eq "^[[:space:]]*\"?${pkg}\"?[[:space:]]*=" pyproject.toml; then
       warn "Forbidden package in pyproject.toml: $pkg"
       FOUND_FORBIDDEN=1
-    fi
-    # Also catch poetry style `pkg = "x.y"` inside [tool.poetry.dependencies]
-    if grep -Eq "^[[:space:]]*${pkg}[[:space:]]*=" pyproject.toml; then
-      :  # already handled above (quoted form); leave for completeness
     fi
   done
 fi
@@ -228,11 +226,12 @@ fi
 # ===========================================================================
 title "External CDN / Runtime Asset Check"
 
+CDN_TARGETS=()
+[ -d ./frontend/src ] && CDN_TARGETS+=(./frontend/src)
+[ -d ./frontend/public ] && CDN_TARGETS+=(./frontend/public)
+
 CDN_REFS=""
-if [ -d ./frontend/src ] || [ -d ./frontend/public ]; then
-  CDN_TARGETS=()
-  [ -d ./frontend/src ] && CDN_TARGETS+=(./frontend/src)
-  [ -d ./frontend/public ] && CDN_TARGETS+=(./frontend/public)
+if [ "${#CDN_TARGETS[@]}" -gt 0 ]; then
   CDN_REFS=$(find "${CDN_TARGETS[@]}" \
     "${FIND_EXCLUDES[@]}" \
     -type f \( -name "*.tsx" -o -name "*.ts" -o -name "*.jsx" -o -name "*.js" -o -name "*.html" -o -name "*.css" \) \
