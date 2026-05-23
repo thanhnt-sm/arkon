@@ -32,8 +32,8 @@ Executed `/ck:cook --auto` on the 4-phase plan: hot-patches → unit tests → m
 - Alembic migration `028_seed_llm_profile_kv.py` applied to dev DB via direct SQL (container image predates the new revision; applied via `psql -f` then stamped `alembic_version='028'`).
 - 4 KV rows seeded: `llm_profile='local'`, `llm_context_length=NULL`, `llm_model_name=NULL`, `mrp.intake_paused='false'`.
 - F1 JSONB write schema validated end-to-end via synthetic insert + rollback on a real source row.
-- **Skipped**: A/B harness (only 1 source in `error` state — DELETE-regen too risky in `--auto`) and `/admin/llm-health` smoke (container image predates the new endpoint — needs rebuild post-deploy).
-- **Open Question #4 resolved**: `runtime_profile._PROFILE_CACHE` is module-scope with 60s TTL. `alembic downgrade -1` removes the KV rows but worker processes serve the cached profile for up to 60s. Operator fix: restart worker container after downgrade, or call `PATCH /api/admin/app-config` to trigger `invalidate()`. Documented in `docs/mrp-ops.md` + `docs/local-llm.md`.
+- **Skipped**: A/B harness (only 1 source in `error` state — DELETE-regen too risky in `--auto`) and `/api/llm-health` smoke (container image predates the new endpoint — needs rebuild post-deploy).
+- **Open Question #4 resolved**: `runtime_profile._PROFILE_CACHE` is module-scope with 60s TTL. `alembic downgrade -1` removes the KV rows but worker processes serve the cached profile for up to 60s. Operator fix: restart worker container after downgrade, or call `PATCH /api/app-config` to trigger `invalidate()`. Documented in `docs/mrp-ops.md` + `docs/local-llm.md`.
 
 **Phase 04 — Frontend + Docs + Commit Split**
 - Frontend `digest` page-type added to `WikiPageType` union, `WikiTypeBadge` map, and `wikiTypeGroupLabel`. Inline badge "AI-generated summary" with `auto_awesome` icon injected into wiki page renderer when `page.page_type === 'digest'`.
@@ -45,12 +45,12 @@ Executed `/ck:cook --auto` on the 4-phase plan: hot-patches → unit tests → m
 
 - `git push origin main` — held for user verification. 13 direct-to-main commits is irreversible; the plan acknowledged the audit-trail compromise.
 - A/B harness run on 3 sources of different sizes (no candidates available in dev DB).
-- Live `/admin/llm-health` smoke (container image lag).
+- Live `/api/llm-health` smoke (container image lag).
 - `uv.lock` — session artifact, untracked; user decides whether to commit.
 
 ## Hand-offs
 
-- **Operator (post-push)**: rebuild backend image so the running container picks up `app/ai/runtime_profile.py`, the new `/admin/llm-health` + `/admin/app-config PATCH` endpoints, and the `mrp.intake_paused` worker gate. Migration is already applied — no re-run needed.
+- **Operator (post-push)**: rebuild backend image so the running container picks up `app/ai/runtime_profile.py`, the new `/api/llm-health` + `PATCH /api/app-config` endpoints, and the `mrp.intake_paused` worker gate. Migration is already applied — no re-run needed.
 - **Operator (48h monitoring)**: watch `/api/llm-health` profile flag; should not flip unintentionally. Documented as out-of-scope for this cook.
 - **Follow-up plan candidate**: deferred parent-plan phases 05/06/07 (chunked digest streaming, multi-source merge, batch reembed). Decision needed: file as new plan or close as v2-scope.
 

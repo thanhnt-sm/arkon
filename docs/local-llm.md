@@ -6,14 +6,14 @@ Quick reference for running arkon's MRP pipeline against a local LM Studio
 ## Toggle profile
 
 - SQL: `psql -c "UPDATE app_config SET value='cloud' WHERE key='llm_profile';"`
-- API: `PATCH /admin/app-config` body `{"updates":{"llm_profile":"cloud"}}` (admin only)
+- API: `PATCH /api/app-config` body `{"updates":{"llm_profile":"cloud"}}` (admin only)
 
 Cache invalidates immediately; next ingest picks up the new profile.
 
 ## Inspect runtime config
 
 - Logs: `docker logs arkon_worker 2>&1 | grep '\[profile='`
-- Endpoint: `GET /admin/llm-health` returns `{profile, context_length, model_name, last_probe_ok, last_probe_ts, intake_paused}`.
+- Endpoint: `GET /api/llm-health` returns `{profile, context_length, model_name, last_probe_ok, last_probe_ts, intake_paused}`.
 
 ## Pause intake (for A/B harness)
 

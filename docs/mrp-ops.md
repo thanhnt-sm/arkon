@@ -228,7 +228,7 @@ first `runtime_profile` probe), and `mrp.intake_paused`=`false`.
 `alembic downgrade -1` removes the 4 KV rows, **but** the `runtime_profile`
 module-scope cache (`_PROFILE_CACHE` in `app/ai/runtime_profile.py`) holds
 the previous snapshot for up to 60s (TTL). Worker processes continue serving
-the cached profile until either the TTL expires or `PATCH /api/admin/app-config`
+the cached profile until either the TTL expires or `PATCH /api/app-config`
 is called (which triggers `invalidate()`). On rollback, restart workers to
 force a fresh probe:
 
