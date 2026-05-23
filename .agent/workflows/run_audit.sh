@@ -16,6 +16,8 @@ set -uo pipefail
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 # shellcheck source=lib/audit-helpers.sh
 source "$SCRIPT_DIR/lib/audit-helpers.sh"
+# shellcheck source=lib/pii-patterns.sh
+source "$SCRIPT_DIR/lib/pii-patterns.sh"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -393,6 +395,53 @@ if [ -n "${AUDIT_PATCH_FILE:-}" ] && [ -f "$AUDIT_PATCH_FILE" ]; then
   else
     pass "No external CDN references in upstream patch"
   fi
+fi
+
+# ===========================================================================
+# 10. PII Exfiltration Pattern Scan
+# Network call + PII keyword + non-allowlisted host → WARN.
+# ===========================================================================
+title "PII Exfiltration Pattern Scan"
+
+PII_RAW=$(find . \
+  "${FIND_EXCLUDES[@]}" \
+  -type f \
+  \( -name "*.py" -o -name "*.js" -o -name "*.ts" -o -name "*.tsx" -o -name "*.jsx" \) \
+  -exec grep -EnH "$PII_NETWORK_RE" {} + 2>/dev/null || true)
+
+PII_HITS=""
+if [ -n "$PII_RAW" ]; then
+  # Stage 1: keep only candidate-network lines that also mention a PII keyword.
+  PII_CANDIDATES=$(echo "$PII_RAW" \
+    | grep -Ev "^[^:]+:[0-9]+:[[:space:]]*(//|#|/\*|\*)" \
+    | grep -Ei "$PII_KEYWORD_RE" \
+    || true)
+
+  # Stage 2: per line, classify the URL host (if any).
+  if [ -n "$PII_CANDIDATES" ]; then
+    while IFS= read -r line; do
+      [ -z "$line" ] && continue
+      # Drop file:line prefix to extract just the code portion for URL match.
+      code=$(echo "$line" | awk -F: '{ for(i=3;i<=NF;i++){ printf "%s%s", $i, (i<NF?":":"") } print "" }')
+      host=$(extract_url_host "$code")
+      if [ -z "$host" ]; then
+        # No literal URL on this line — variable URL, relative /api/ path, or
+        # config-driven. Not statically exfiltrative.
+        continue
+      fi
+      if is_ai_provider_host "$host" || is_internal_host "$host"; then
+        continue
+      fi
+      PII_HITS+="$line"$'\n'
+    done <<< "$PII_CANDIDATES"
+  fi
+fi
+
+if [ -z "$PII_HITS" ]; then
+  pass "No PII exfiltration patterns found"
+else
+  warn "Possible PII exfiltration — manual review required:"
+  printf '%s' "$PII_HITS" | head -20
 fi
 
 # ===========================================================================
