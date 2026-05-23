@@ -106,3 +106,10 @@ worktrees/
 
 # Nginx (from upstream)
 nginx/
+
+# MRP operator logs (api/worker output)
+logs/
+*.log
+
+# Python build artifacts (created by uv pip install -e .)
+*.egg-info/
