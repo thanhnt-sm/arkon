@@ -140,6 +140,17 @@ if [ "$MODE_FLAG" = "--merge" ]; then
     echo "🔀 Merging $REMOTE/$BRANCH..."
     git merge "$REMOTE_REF"
     echo "🎉 Merge complete. Post-merge audit runs via git hook if installed."
+    # Best-effort: record merged state in the forensic index.
+    SCRIPT_DIR_INNER="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+    if [ -z "${ARKON_AUDIT_NO_INDEX:-}" ] && [ -x "$SCRIPT_DIR_INNER/append_index.sh" ]; then
+        bash "$SCRIPT_DIR_INNER/append_index.sh" \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            "$UPSTREAM_SHA" \
+            "$PATCH_FILE" \
+            "PASS" \
+            "$REPORT" \
+            "merged" >/dev/null 2>&1 || true
+    fi
     exit 0
 fi
 
@@ -147,6 +158,17 @@ fi
 if [ "$SYNC_MODE" = "dryrun" ]; then
     echo "ℹ️  Dry-run mode: diff archived, no merge executed."
     echo "PATCH_FILE=$PATCH_FILE"
+    # Best-effort: record this dry-run in the forensic index.
+    SCRIPT_DIR_INNER="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+    if [ -z "${ARKON_AUDIT_NO_INDEX:-}" ] && [ -x "$SCRIPT_DIR_INNER/append_index.sh" ]; then
+        bash "$SCRIPT_DIR_INNER/append_index.sh" \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            "$REMOTE_REF" \
+            "$PATCH_FILE" \
+            "pending" \
+            "" \
+            "dry-run" >/dev/null 2>&1 || true
+    fi
     exit 0
 fi
 

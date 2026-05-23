@@ -1,0 +1,190 @@
+name: upstream-audit
+
+# Weekly upstream sync audit — dry-run only, never merges.
+# - Fetches upstream, archives the diff, runs the security audit + conflict
+#   categorization, uploads artifacts, and (on WARN/FAIL) opens a GitHub
+#   issue. Idempotent: one issue per upstream SHA.
+
+on:
+  schedule:
+    # Monday 08:00 Asia/Saigon = Monday 01:00 UTC.
+    - cron: "0 1 * * 1"
+  workflow_dispatch:
+    inputs:
+      upstream_url:
+        description: "Override upstream remote URL (optional)"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      UPSTREAM_REF: upstream/main
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install tools
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y jq inotify-tools
+          python3 -m pip install --user pip-audit
+
+      - name: Configure upstream remote
+        env:
+          UPSTREAM_URL: ${{ inputs.upstream_url || secrets.UPSTREAM_URL }}
+        run: |
+          if [ -z "${UPSTREAM_URL:-}" ]; then
+            echo "❌ UPSTREAM_URL secret not configured."
+            echo "   Add it via: Settings → Secrets and variables → Actions"
+            exit 1
+          fi
+          git remote remove upstream 2>/dev/null || true
+          git remote add upstream "$UPSTREAM_URL"
+          git config user.email "ci@example.com"
+          git config user.name  "upstream-audit-ci"
+
+      - name: Dry-run sync (fetch + archive)
+        id: sync
+        run: |
+          set +e
+          SYNC_MODE=dryrun bash .agent/workflows/safe_sync.sh upstream main 2>&1 \
+            | tee /tmp/sync.log
+          rc=$?
+          if [ "$rc" -eq 0 ] && grep -q "Already up to date" /tmp/sync.log; then
+            echo "up_to_date=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Extract archived patch path from sync output.
+          PATCH=$(grep -E "^PATCH_FILE=" /tmp/sync.log | tail -1 | cut -d= -f2)
+          if [ -z "$PATCH" ] || [ ! -f "$PATCH" ]; then
+            echo "❌ no patch archived; aborting audit"
+            exit 2
+          fi
+          echo "patch=$PATCH" >> "$GITHUB_OUTPUT"
+          echo "up_to_date=false" >> "$GITHUB_OUTPUT"
+
+      - name: Run security audit
+        id: audit
+        if: steps.sync.outputs.up_to_date != 'true'
+        run: |
+          set +e
+          AUDIT_PATCH_FILE="${{ steps.sync.outputs.patch }}" \
+            bash .agent/workflows/run_audit.sh 2>&1 | tee /tmp/audit.log
+          rc=$?
+          echo "exit=$rc" >> "$GITHUB_OUTPUT"
+          case "$rc" in
+            0) echo "status=PASS" >> "$GITHUB_OUTPUT" ;;
+            1) echo "status=FAIL" >> "$GITHUB_OUTPUT" ;;
+            *) echo "status=WARN" >> "$GITHUB_OUTPUT" ;;
+          esac
+          exit 0  # don't fail the workflow on audit findings; we open an issue instead
+
+      - name: Categorize conflicts
+        id: categorize
+        if: steps.sync.outputs.up_to_date != 'true'
+        run: |
+          set +e
+          bash .agent/workflows/categorize_conflicts.sh upstream/main > /tmp/conflicts.json 2>&1
+          rc=$?
+          if [ "$rc" -ne 0 ]; then
+            echo "[]" > /tmp/conflicts.json
+          fi
+          echo "files=$(jq 'length' /tmp/conflicts.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Generate report
+        id: report
+        if: steps.sync.outputs.up_to_date != 'true'
+        run: |
+          STAMP=$(date -u +%y%m%d-%H%M)
+          REPORT="plans/reports/sync-audit-${STAMP}-ci.md"
+          mkdir -p "$(dirname "$REPORT")"
+          UPSTREAM_REF="$UPSTREAM_REF" \
+            bash .agent/workflows/generate_report.sh \
+              "${{ steps.sync.outputs.patch }}" \
+              /tmp/audit.log \
+              /tmp/conflicts.json \
+              "$REPORT"
+          echo "report=$REPORT" >> "$GITHUB_OUTPUT"
+
+      - name: Update metrics + index
+        if: steps.sync.outputs.up_to_date != 'true'
+        run: |
+          set +e
+          bash .agent/workflows/update_metrics.sh "${{ steps.audit.outputs.status }}" /tmp/audit.log
+          UPSTREAM_SHA=$(git rev-parse upstream/main)
+          bash .agent/workflows/append_index.sh \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            "$UPSTREAM_SHA" \
+            "${{ steps.sync.outputs.patch }}" \
+            "${{ steps.audit.outputs.status }}" \
+            "${{ steps.report.outputs.report }}" \
+            "ci-dry-run"
+
+      - name: Upload artifacts
+        if: steps.sync.outputs.up_to_date != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: sync-audit-${{ github.run_id }}
+          if-no-files-found: warn
+          retention-days: 90
+          path: |
+            .agent/sync_history/
+            .agent/metrics/
+            plans/reports/sync-audit-*.md
+
+      - name: Open issue on WARN/FAIL (idempotent)
+        if: steps.sync.outputs.up_to_date != 'true' && steps.audit.outputs.status != 'PASS'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          STATUS="${{ steps.audit.outputs.status }}"
+          UPSTREAM_SHA=$(git rev-parse upstream/main)
+          SHORT_SHA=${UPSTREAM_SHA:0:12}
+          TITLE="[sync-audit] $STATUS — upstream/main @ ${SHORT_SHA}"
+
+          # Idempotency: skip if an open issue already names this SHA.
+          if gh issue list --state open --search "$SHORT_SHA" --json title --jq '.[].title' \
+               | grep -Fq "$SHORT_SHA"; then
+            echo "Issue already exists for $SHORT_SHA — skipping."
+            exit 0
+          fi
+
+          LABEL_PRIORITY=P2
+          [ "$STATUS" = "FAIL" ] && LABEL_PRIORITY=P1
+
+          gh issue create \
+            --title "$TITLE" \
+            --body-file "${{ steps.report.outputs.report }}" \
+            --label "sync-audit,$LABEL_PRIORITY" \
+            || echo "issue creation failed — continuing"
+
+      - name: Summary
+        if: always()
+        run: |
+          if [ "${{ steps.sync.outputs.up_to_date }}" = "true" ]; then
+            echo "## ✅ Already up to date with upstream/main" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          STATUS="${{ steps.audit.outputs.status }}"
+          FILES="${{ steps.categorize.outputs.files }}"
+          {
+            echo "## Sync Audit Result: $STATUS"
+            echo ""
+            echo "- **Files changed by upstream:** $FILES"
+            echo "- **Patch:** \`${{ steps.sync.outputs.patch }}\`"
+            echo "- **Report:** \`${{ steps.report.outputs.report }}\`"
+            echo ""
+            if [ "$STATUS" != "PASS" ]; then
+              echo "An issue has been opened (or already exists) for this SHA."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

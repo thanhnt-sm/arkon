@@ -99,3 +99,7 @@ worktrees/
 .agent/sync_history/watch.pid
 .agent/sync_history/.watch_event
 .agent/sync_history/force-push.log
+
+# Audit metrics counters (runtime state, not source)
+.agent/metrics/audit-counters.json
+.agent/metrics/*.lock

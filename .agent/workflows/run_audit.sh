@@ -445,17 +445,36 @@ else
 fi
 
 # ===========================================================================
-# Summary
+# Summary + best-effort metrics update
 # ===========================================================================
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
 if [ "$FAIL_COUNT" -gt 0 ]; then
   echo -e "${RED}❌ Audit FAILED: $FAIL_COUNT critical issue(s), $WARN_COUNT warning(s)${NC}"
-  exit 1
+  AUDIT_FINAL_STATUS="FAIL"
+  AUDIT_FINAL_EXIT=1
 elif [ "$WARN_COUNT" -gt 0 ]; then
   echo -e "${YELLOW}⚠️  Audit completed with $WARN_COUNT warning(s) — manual review required${NC}"
-  exit 2
+  AUDIT_FINAL_STATUS="WARN"
+  AUDIT_FINAL_EXIT=2
 else
   echo -e "${GREEN}✅ Audit PASSED — all checks clean${NC}"
-  exit 0
+  AUDIT_FINAL_STATUS="PASS"
+  AUDIT_FINAL_EXIT=0
 fi
+
+# Best-effort metrics increment. Never fail the audit on a metrics error.
+# Opt out by setting ARKON_AUDIT_NO_METRICS=1 (used by regression tests so
+# they don't pollute production counters).
+# Per-check aggregation requires an explicit log path — CI workflow passes
+# /tmp/audit.log via the wrapper; interactive runs increment totals only.
+if [ -z "${ARKON_AUDIT_NO_METRICS:-}" ] && [ -x "$SCRIPT_DIR/update_metrics.sh" ]; then
+  if [ -n "${ARKON_AUDIT_LOG:-}" ] && [ -f "${ARKON_AUDIT_LOG}" ]; then
+    bash "$SCRIPT_DIR/update_metrics.sh" "$AUDIT_FINAL_STATUS" "$ARKON_AUDIT_LOG" >/dev/null 2>&1 || true
+  else
+    bash "$SCRIPT_DIR/update_metrics.sh" "$AUDIT_FINAL_STATUS" >/dev/null 2>&1 || true
+  fi
+fi
+
+exit "$AUDIT_FINAL_EXIT"
