@@ -33,6 +33,11 @@ MAX_MAP_CONCURRENCY = 6
 EXTRACT_TIMEOUT = 120  # seconds per extraction call
 OVERLAP_SEPARATOR = "[…context from previous section…]\n"
 
+# Pipeline-shape thresholds (D3). Sub-cases inside `single_pass` decide
+# whether to stuff (no MRP), single-MAP (no refine/resolve), or full MRP.
+STUFF_THRESHOLD_CHARS = 8_000
+SINGLE_MAP_THRESHOLD_CHARS = 20_000
+
 
 # ---------------------------------------------------------------------------
 # Dataclass
@@ -64,6 +69,28 @@ def classify_strategy(full_text: str, outline_json: Optional[list]) -> str:
         return "standard"
     else:
         return "hierarchical"
+
+
+def classify_pipeline_shape(full_text: str) -> str:
+    """
+    Sub-case selector inside the single-strategy classification. Returns one
+    of the pydantic-typed `PipelineShape` literals: stuff | single_map |
+    full_mrp | hierarchical. Drives mapper's choice of fan-out vs. roll-up.
+
+    Boundaries (D3):
+      <8k          → stuff (1 LLM call, skip MAP/REDUCE)
+      8k–20k       → single_map (1 MAP chunk, skip refine/resolve)
+      20k–500k     → full_mrp
+      >500k        → hierarchical
+    """
+    n = len(full_text)
+    if n < STUFF_THRESHOLD_CHARS:
+        return "stuff"
+    if n < SINGLE_MAP_THRESHOLD_CHARS:
+        return "single_map"
+    if n <= 500_000:
+        return "full_mrp"
+    return "hierarchical"
 
 
 # ---------------------------------------------------------------------------
@@ -331,19 +358,167 @@ def _convert_offsets(extract: dict, chunk: DocumentChunk) -> dict:
     return extract
 
 
-async def extract_chunk(llm: LLMProvider, chunk: DocumentChunk) -> dict:
+async def extract_chunk(
+    llm: LLMProvider,
+    chunk: DocumentChunk,
+    extra_system_context: str = "",
+    timeout: Optional[int] = None,
+) -> dict:
     """
     Single LLM call to extract structured knowledge from one chunk.
-    Returns extract dict with absolute_offset fields. Raises on failure.
+
+    `extra_system_context` (Phase 3) is prepended to the system prompt for
+    rolling-refine: passes a ≤500-token summary of the previous chunk so the
+    extractor stays coherent across sequential chunks. Default `""` preserves
+    cloud-parallel behavior bit-for-bit.
+
+    `timeout` overrides EXTRACT_TIMEOUT — wired from `profile.extract_timeout_s`
+    by callers that have a profile in scope.
     """
     prompt = _build_extraction_prompt(chunk)
+    system_prompt = (
+        f"{extra_system_context}\n\n{EXTRACTION_SYSTEM}"
+        if extra_system_context
+        else EXTRACTION_SYSTEM
+    )
     raw = await asyncio.wait_for(
-        llm.generate(prompt, system=EXTRACTION_SYSTEM, temperature=0.1),
-        timeout=EXTRACT_TIMEOUT,
+        llm.generate(prompt, system=system_prompt, temperature=0.1),
+        timeout=timeout or EXTRACT_TIMEOUT,
     )
     extract = _parse_extract_json(raw)
     extract = _convert_offsets(extract, chunk)
     return extract
+
+
+# ---------------------------------------------------------------------------
+# Phase 1c-bis — Rolling refine (local profile)
+# ---------------------------------------------------------------------------
+
+ROLLING_DISTILL_SYSTEM = (
+    "You compress context for the next document section's extractor. "
+    "Output PLAIN TEXT only — no JSON, no markdown headers, ≤300 words."
+)
+
+ROLLING_DISTILL_PROMPT = """\
+Given the extracted JSON below from section N of a document, produce a tight
+≤300 word summary that helps the next section's extractor stay consistent.
+
+Focus on:
+- Named entities introduced (names + types)
+- Key claims/decisions stated
+- Open threads to watch for in the next section
+
+Extraction JSON:
+{extract_json}
+
+Summary:"""
+
+
+async def _distill_summary(
+    llm: LLMProvider, extract: dict, timeout: int = 60
+) -> str:
+    """
+    Distill a ≤2_000 char rolling-summary from a chunk extract. On failure,
+    return empty string (caller falls back to no context — never crashes the
+    chain).
+    """
+    import json
+
+    try:
+        # Keep the JSON payload small to stay inside even a 4k-ctx model.
+        slim = {
+            "entities": [
+                {"name": e.get("name"), "type": e.get("type")}
+                for e in (extract.get("entities") or [])[:30]
+            ],
+            "concepts": [
+                {"term": c.get("term")} for c in (extract.get("concepts") or [])[:30]
+            ],
+            "claims": [
+                {"statement": (cl.get("statement") or "")[:160]}
+                for cl in (extract.get("claims") or [])[:20]
+            ],
+        }
+        prompt = ROLLING_DISTILL_PROMPT.format(extract_json=json.dumps(slim, ensure_ascii=False))
+        raw = await asyncio.wait_for(
+            llm.generate(
+                prompt,
+                system=ROLLING_DISTILL_SYSTEM,
+                temperature=0.1,
+                max_tokens=500,
+            ),
+            timeout=timeout,
+        )
+        # Hard cap — LM Studio doesn't reliably honor max_tokens on small models.
+        return (raw or "").strip()[:2_000]
+    except Exception as exc:
+        logger.warning(f"[rolling_distill] failed: {exc}")
+        return ""
+
+
+async def _run_rolling_refine(
+    llm: LLMProvider,
+    chunks: list[DocumentChunk],
+    pending_chunks: list[DocumentChunk],
+    existing_by_idx: dict,
+    session: AsyncSession,
+    tracker: ProgressTracker,
+    done_count: int,
+    extract_timeout: int,
+) -> None:
+    """
+    Local-profile MAP loop: sequential extract + distill summary for next.
+
+    On per-chunk failure: mark row error, fall back to empty rolling summary,
+    continue. NEVER aborts entire chain — that would re-introduce the
+    "(Page generation failed)" stub failure mode this plan eliminates.
+    """
+    prior_summary = ""
+    total = len(chunks)
+    pending_set = {c.index for c in pending_chunks}
+
+    for chunk in chunks:
+        if chunk.index not in pending_set:
+            # Skip already-done chunks but still distill from their extract so
+            # the rolling context survives resume.
+            row = existing_by_idx[chunk.index]
+            if row.extract_json and not prior_summary:
+                prior_summary = await _distill_summary(llm, row.extract_json)
+            continue
+
+        row = existing_by_idx[chunk.index]
+        prefix = f"## Previous Section Summary\n{prior_summary}\n\n" if prior_summary else ""
+
+        try:
+            extract = await extract_chunk(
+                llm, chunk,
+                extra_system_context=prefix,
+                timeout=extract_timeout,
+            )
+            row.extract_json = extract
+            row.status = "done"
+            row.error_message = None
+            await session.commit()
+        except Exception as exc:
+            logger.warning(f"MRP MAP rolling chunk {chunk.index} failed: {exc}")
+            row.status = "error"
+            row.error_message = str(exc)[:500]
+            await session.commit()
+            extract = None  # distill will skip
+
+        pct = 10 + int(40 * (done_count + chunk.index + 1) / max(total, 1))
+        await tracker.update(pct, f"Extracting chunk {chunk.index + 1}/{total} (rolling)...")
+
+        # Build rolling summary for the next iteration (skip on last).
+        if chunk.index < total - 1 and extract is not None:
+            prior_summary = await _distill_summary(llm, extract)
+        elif chunk.index < total - 1 and extract is None:
+            # Don't cascade a failure into a stale summary
+            prior_summary = ""
+
+        logger.debug(
+            f"[rolling] idx={chunk.index} prior_summary_chars={len(prior_summary)}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -369,8 +544,19 @@ async def run_map_phase(
     """
     from app.database.models import Source, SourceChunkExtract
 
+    # Pull runtime profile (attached by ProviderRegistry.get_llm); falls back
+    # to legacy constants when absent so tests that pass a bare LLM mock keep
+    # working.
+    profile = getattr(llm, "runtime_profile", None)
+    concurrency = profile.concurrency if profile else MAX_MAP_CONCURRENCY
+    extract_timeout = profile.extract_timeout_s if profile else EXTRACT_TIMEOUT
+    pipeline_shape = classify_pipeline_shape(full_text)
+
     strategy = classify_strategy(full_text, outline_json)
-    logger.info(f"MRP: source={source_id} strategy={strategy} len={len(full_text)}")
+    logger.info(
+        f"MRP: source={source_id} strategy={strategy} shape={pipeline_shape} "
+        f"len={len(full_text)} concurrency={concurrency} timeout={extract_timeout}s"
+    )
 
     chunks = build_chunks(full_text, outline_json, strategy)
     logger.info(f"MRP MAP: {len(chunks)} chunks for source={source_id}")
@@ -413,30 +599,44 @@ async def run_map_phase(
     done_count = len(chunks) - len(pending_chunks)
     logger.info(f"MRP MAP: {done_count} already done, {len(pending_chunks)} pending for source={source_id}")
 
-    semaphore = asyncio.Semaphore(MAX_MAP_CONCURRENCY)
-    commit_lock = asyncio.Lock()
+    # Local profile → sequential rolling refine (Phase 3). Cloud → fan-out.
+    is_local = bool(profile and profile.is_local)
+    if is_local and len(pending_chunks) > 1:
+        await _run_rolling_refine(
+            llm=llm,
+            chunks=chunks,
+            pending_chunks=pending_chunks,
+            existing_by_idx=existing_by_idx,
+            session=session,
+            tracker=tracker,
+            done_count=done_count,
+            extract_timeout=extract_timeout,
+        )
+    else:
+        semaphore = asyncio.Semaphore(concurrency)
+        commit_lock = asyncio.Lock()
 
-    async def _extract_with_sem(chunk: DocumentChunk):
-        async with semaphore:
-            row = existing_by_idx[chunk.index]
-            try:
-                extract = await extract_chunk(llm, chunk)
-                # Serialize mutations and commits — AsyncSession can't handle concurrent state changes
-                async with commit_lock:
-                    row.extract_json = extract
-                    row.status = "done"
-                    row.error_message = None
-                    await session.commit()
-            except Exception as e:
-                logger.warning(f"MRP MAP chunk {chunk.index} failed: {e}")
-                async with commit_lock:
-                    row.status = "error"
-                    row.error_message = str(e)[:500]
-                    await session.commit()
-            pct = 10 + int(40 * (done_count + chunk.index + 1) / max(len(chunks), 1))
-            await tracker.update(pct, f"Extracting chunk {chunk.index + 1}/{len(chunks)}...")
+        async def _extract_with_sem(chunk: DocumentChunk):
+            async with semaphore:
+                row = existing_by_idx[chunk.index]
+                try:
+                    extract = await extract_chunk(llm, chunk, timeout=extract_timeout)
+                    # Serialize mutations and commits — AsyncSession can't handle concurrent state changes
+                    async with commit_lock:
+                        row.extract_json = extract
+                        row.status = "done"
+                        row.error_message = None
+                        await session.commit()
+                except Exception as e:
+                    logger.warning(f"MRP MAP chunk {chunk.index} failed: {e}")
+                    async with commit_lock:
+                        row.status = "error"
+                        row.error_message = str(e)[:500]
+                        await session.commit()
+                pct = 10 + int(40 * (done_count + chunk.index + 1) / max(len(chunks), 1))
+                await tracker.update(pct, f"Extracting chunk {chunk.index + 1}/{len(chunks)}...")
 
-    await asyncio.gather(*[_extract_with_sem(c) for c in pending_chunks])
+        await asyncio.gather(*[_extract_with_sem(c) for c in pending_chunks])
 
     # Sequential retry for failed chunks
     error_chunks = [c for c in chunks if existing_by_idx[c.index].status == "error"]
@@ -445,7 +645,7 @@ async def run_map_phase(
         for chunk in error_chunks:
             row = existing_by_idx[chunk.index]
             try:
-                extract = await extract_chunk(llm, chunk)
+                extract = await extract_chunk(llm, chunk, timeout=extract_timeout)
                 row.extract_json = extract
                 row.status = "done"
                 row.error_message = None

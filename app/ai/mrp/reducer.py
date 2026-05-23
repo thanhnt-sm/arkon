@@ -259,9 +259,10 @@ async def resolve_ambiguous_entities(
     )
 
     try:
+        from app.config import get_settings
         raw = await asyncio.wait_for(
             llm.generate(prompt, system="You are a named-entity resolution assistant. Return only JSON.", temperature=0.0),
-            timeout=60,
+            timeout=get_settings().mrp_timeout_dedup,
         )
         from app.utils.text import parse_json_loose
         decisions: list[bool] = parse_json_loose(raw)
@@ -410,13 +411,14 @@ async def _resolve_maybe_items(
         "Return ONLY the JSON array.\n\n" + "\n".join(lines)
     )
     try:
+        from app.config import get_settings
         raw = await asyncio.wait_for(
             llm.generate(
                 prompt,
                 system="You are a knowledge base assistant. Return only a JSON boolean array.",
                 temperature=0.0,
             ),
-            timeout=30,
+            timeout=get_settings().mrp_timeout_reconcile,
         )
         from app.utils.text import parse_json_loose
         decisions: list[bool] = parse_json_loose(raw)
@@ -568,9 +570,10 @@ async def run_planning_call(
         target_page_count=target_pages,
     )
 
+    from app.config import get_settings
     raw = await asyncio.wait_for(
         llm.generate(prompt, system=PLANNING_SYSTEM, temperature=0.1),
-        timeout=120,
+        timeout=get_settings().mrp_timeout_planning,
     )
 
     from app.utils.text import parse_json_loose
@@ -656,6 +659,23 @@ async def run_reduce_phase(
     plan_dict["_claims"] = raw_claims
     plan_dict["_entities"] = canonical_entities
     plan_dict["_concepts"] = canonical_concepts
+
+    # Phase 2 — persist typed CompilationPlanJson fields so Phase 8 digest +
+    # Phase 9 A/B harness read invariants, not invented attrs.
+    try:
+        from app.ai.mrp.contracts import CompilationPlanJson
+        from app.ai.mrp.mapper import classify_pipeline_shape
+
+        shape = classify_pipeline_shape(source.full_text or "")
+        page_slugs = [p.get("slug") for p in (plan_dict.get("pages") or []) if p.get("slug")]
+        typed = CompilationPlanJson(
+            pipeline_shape=shape,
+            page_slugs=page_slugs,
+            summary=(plan_dict.get("summary") or "")[:1_000],
+        )
+        plan_dict.update(typed.model_dump())
+    except Exception as exc:
+        logger.warning(f"MRP REDUCE typed-plan write failed (continuing): {exc}")
 
     # 2.8 Persist plan (upsert: safe to re-run)
 

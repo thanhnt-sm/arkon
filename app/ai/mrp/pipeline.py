@@ -13,6 +13,8 @@ Phase 5 (COMMIT) is implemented inline here. It reuses existing wiki_service
 functions (apply_create / apply_update) and embedding_storage utilities.
 """
 
+import asyncio
+import time
 import uuid
 from typing import Optional
 
@@ -25,6 +27,75 @@ from app.ai.mrp.reducer import run_reduce_phase
 from app.ai.mrp.verifier import run_verify_phase
 from app.ai.mrp.writer import PageWriteResult, run_refine_phase
 from app.utils.progress import ProgressTracker
+
+
+# ---------------------------------------------------------------------------
+# Health probe — module-scope state for /admin/llm-health snapshot
+# ---------------------------------------------------------------------------
+
+_LAST_PROBE_OK: bool = True
+_LAST_PROBE_TS: float = 0.0
+_LAST_PAUSE_TS: float = 0.0  # rolling-1h-window counter reset (Finding #5)
+
+
+def get_health_snapshot() -> dict:
+    """Per-process LLM probe snapshot, surfaced by admin_settings.py."""
+    return {
+        "last_probe_ok": _LAST_PROBE_OK,
+        "last_probe_ts": _LAST_PROBE_TS,
+        "last_pause_ts": _LAST_PAUSE_TS,
+    }
+
+
+class LMStudioDownError(Exception):
+    """Raised after exhausting the pre-MAP pause-cycle budget."""
+
+
+async def _is_lm_studio_alive(client, timeout_s: float = 5.0) -> bool:
+    """GET /v1/models with 5s timeout. Updates module-scope probe state."""
+    global _LAST_PROBE_OK, _LAST_PROBE_TS
+    try:
+        await asyncio.wait_for(client.models.list(), timeout=timeout_s)
+        _LAST_PROBE_OK = True
+    except Exception as exc:
+        logger.warning(f"[llm-health] probe failed: {exc}")
+        _LAST_PROBE_OK = False
+    _LAST_PROBE_TS = time.time()
+    return _LAST_PROBE_OK
+
+
+async def _run_with_pause_cycles(coro_factory, llm, max_cycles: int = 3, sleep_s: int = 30):
+    """
+    Wrap an LLM-dependent coroutine with pre-flight liveness probe + pause-loop.
+
+    `coro_factory` is a callable that returns a fresh awaitable each cycle
+    (we cannot re-await a coroutine). On 3 consecutive failed probes, raise
+    LMStudioDownError so the worker marks the job 'failed' with a diagnostic.
+
+    Counter resets after a successful probe (kills the "permanent worker
+    death" failure mode in Finding #5).
+    """
+    global _LAST_PAUSE_TS
+    cycles = 0
+    client = getattr(llm, "client", None)
+    if client is None:
+        # No client to probe → just run the coroutine without health gating
+        return await coro_factory()
+
+    while True:
+        if await _is_lm_studio_alive(client):
+            cycles = 0  # success resets counter
+            return await coro_factory()
+        cycles += 1
+        _LAST_PAUSE_TS = time.time()
+        if cycles > max_cycles:
+            raise LMStudioDownError(
+                f"LM Studio unreachable after {max_cycles} pause cycles ({max_cycles * sleep_s}s)"
+            )
+        logger.warning(
+            f"[llm-health] LM Studio down, pause cycle {cycles}/{max_cycles}, sleeping {sleep_s}s"
+        )
+        await asyncio.sleep(sleep_s)
 
 
 async def _resolve_wiki_scopes(session: AsyncSession, source) -> list[tuple[str, Optional[uuid.UUID]]]:
@@ -311,15 +382,32 @@ async def run_mrp_pipeline(
     except Exception:
         logger.warning(f"MRP: no embedding provider for source={source_id}")
 
-    # Phase 0 + 1: MAP
-    strategy, chunk_extracts = await run_map_phase(
-        session=session,
-        source_id=source_id,
-        full_text=full_text,
-        outline_json=source.outline_json,
-        tracker=tracker,
-        llm=llm,
-    )
+    # Phase 0 + 1: MAP (gated by pre-flight liveness probe for local profile)
+    profile = getattr(llm, "runtime_profile", None)
+
+    async def _run_map():
+        return await run_map_phase(
+            session=session,
+            source_id=source_id,
+            full_text=full_text,
+            outline_json=source.outline_json,
+            tracker=tracker,
+            llm=llm,
+        )
+
+    if profile is not None and profile.is_local:
+        try:
+            strategy, chunk_extracts = await _run_with_pause_cycles(_run_map, llm)
+        except LMStudioDownError as exc:
+            from app.database.models import Source as _Source
+            src = await session.get(_Source, source_id)
+            if src:
+                src.status = "failed"
+                src.error_message = str(exc)[:500]
+                await session.commit()
+            raise
+    else:
+        strategy, chunk_extracts = await _run_map()
 
     if not chunk_extracts:
         raise ValueError(f"MAP phase produced no successful chunks for source={source_id}")
@@ -482,6 +570,35 @@ async def run_refine_pipeline(
         if src:
             src.pipeline_phase = "verify"
         await session.commit()
+
+    # Phase 3.5: DIGEST (failure isolated — never blocks source.status='ready')
+    try:
+        from app.ai.mrp.digest import run_digest_phase
+        await run_digest_phase(
+            session=session,
+            source=source,
+            compilation_plan=plan,
+            llm=llm,
+            profile=getattr(llm, "runtime_profile", None),
+        )
+        await session.commit()
+    except Exception as exc:
+        logger.warning(f"MRP DIGEST failed for source={source_id} (continuing): {exc}")
+        # Mark on source.metadata so admins can surface a regen prompt.
+        # F1 fix: real attr is `metadata_` (trailing underscore) → DB column "metadata"
+        try:
+            from datetime import datetime, timezone
+            src = await session.get(Source, source_id)
+            if src is not None:
+                src.metadata_ = {
+                    **(src.metadata_ or {}),
+                    "digest_failed": True,
+                    "digest_error": str(exc)[:500],
+                    "digest_failed_at": datetime.now(timezone.utc).isoformat(),
+                }
+                await session.commit()
+        except Exception:
+            await session.rollback()
 
     # Phase 4: VERIFY
     page_results = await run_verify_phase(

@@ -30,7 +30,7 @@ if TYPE_CHECKING:
 # Constants
 # ---------------------------------------------------------------------------
 
-MAX_WRITER_CONCURRENCY = 4
+MAX_WRITER_CONCURRENCY = 1  # serial: a single local 26B model OOMs at 4-way fan-out
 WRITER_COMPLEX_THRESHOLD_EVIDENCE = 8
 WRITER_COMPLEX_THRESHOLD_EXISTING_CHARS = 3_000
 WRITER_AGENT_MAX_STEPS = 10
