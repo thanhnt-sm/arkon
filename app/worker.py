@@ -21,6 +21,7 @@ from loguru import logger
 from sqlalchemy import select
 
 from app.config import settings
+from app.utils.caption_sanitize import sanitize_caption as _sanitize_caption
 from app.utils.logging import setup_file_logging
 
 setup_file_logging("worker.log")
@@ -689,6 +690,29 @@ async def ingest_map_reduce_task(ctx: dict, source_id: str):
 
             registry = ProviderRegistry(session)
 
+            # Pre-flight LLM ping: surface model unavailability NOW (5s budget)
+            # so we don't burn ~21min on MAP timeouts when the model is
+            # crashed/unloaded. Failure raises into the outer try/except,
+            # marking the source `error` with a clear message.
+            llm_ping = await registry.get_llm()
+            # 60s budget covers JIT cold-start on LM Studio (~14-30s for a 26B
+            # 4-bit MLX). A live model responds in <1s; anything slower than
+            # 60s indicates the model is crashed or wedged.
+            try:
+                await asyncio.wait_for(
+                    llm_ping.generate(
+                        prompt="ping",
+                        max_tokens=4,
+                        temperature=0,
+                    ),
+                    timeout=60.0,
+                )
+            except Exception as ping_exc:
+                raise RuntimeError(
+                    f"LLM pre-flight failed: {type(ping_exc).__name__}: {ping_exc}. "
+                    f"Verify the active model is loaded in LM Studio (or remote)."
+                ) from ping_exc
+
             kt_slug = kt_name = kt_desc = None
             if source.knowledge_type_id:
                 kt = await session.get(KnowledgeType, source.knowledge_type_id)
@@ -1063,6 +1087,7 @@ async def caption_images_task(ctx: dict, source_id: str):
                     vision_provider.analyze_image(img_bytes, content_type, prompt=vision_prompt),
                     timeout=PER_IMAGE_TIMEOUT,
                 )
+                caption = _sanitize_caption(caption)
                 # Each image gets its own session — no concurrent session access.
                 async with async_session_factory() as upd_session:
                     await upd_session.execute(

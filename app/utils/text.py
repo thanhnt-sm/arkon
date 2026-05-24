@@ -24,6 +24,9 @@ def _clean_json_from_llm(s: str) -> str:
       - JS single-line comments: // ...
       - JS multi-line comments: /* ... */
       - Trailing commas before } or ]
+      - Unquoted property names (e.g. `name: "x"` → `"name": "x"`)
+        Common with gemma/supergemma family that drift toward Python-dict
+        syntax under long-context extraction prompts.
     """
     # Remove /* ... */ block comments
     s = re.sub(r"/\*.*?\*/", "", s, flags=re.DOTALL)
@@ -31,6 +34,14 @@ def _clean_json_from_llm(s: str) -> str:
     s = re.sub(r'(?<!:)//[^\n]*', "", s)
     # Remove trailing commas before } or ]
     s = re.sub(r",\s*([}\]])", r"\1", s)
+    # Quote unquoted property names. We anchor on `{` or `,` (optionally
+    # preceded by whitespace/newline) so we don't touch identifiers that
+    # legitimately appear inside string values.
+    s = re.sub(
+        r'([{,]\s*)([A-Za-z_][A-Za-z0-9_]*)(\s*:)',
+        r'\1"\2"\3',
+        s,
+    )
     return s
 
 

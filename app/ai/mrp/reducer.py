@@ -21,6 +21,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai.providers.base import EmbeddingProvider, LLMProvider
+from app.config import settings
 from app.utils.progress import ProgressTracker
 
 if TYPE_CHECKING:
@@ -259,10 +260,9 @@ async def resolve_ambiguous_entities(
     )
 
     try:
-        from app.config import get_settings
         raw = await asyncio.wait_for(
             llm.generate(prompt, system="You are a named-entity resolution assistant. Return only JSON.", temperature=0.0),
-            timeout=get_settings().mrp_timeout_dedup,
+            timeout=settings.mrp_timeout_dedup,
         )
         from app.utils.text import parse_json_loose
         decisions: list[bool] = parse_json_loose(raw)
@@ -411,14 +411,13 @@ async def _resolve_maybe_items(
         "Return ONLY the JSON array.\n\n" + "\n".join(lines)
     )
     try:
-        from app.config import get_settings
         raw = await asyncio.wait_for(
             llm.generate(
                 prompt,
                 system="You are a knowledge base assistant. Return only a JSON boolean array.",
                 temperature=0.0,
             ),
-            timeout=get_settings().mrp_timeout_reconcile,
+            timeout=settings.mrp_timeout_reconcile,
         )
         from app.utils.text import parse_json_loose
         decisions: list[bool] = parse_json_loose(raw)
@@ -570,10 +569,9 @@ async def run_planning_call(
         target_page_count=target_pages,
     )
 
-    from app.config import get_settings
     raw = await asyncio.wait_for(
         llm.generate(prompt, system=PLANNING_SYSTEM, temperature=0.1),
-        timeout=get_settings().mrp_timeout_planning,
+        timeout=settings.mrp_timeout_planning,
     )
 
     from app.utils.text import parse_json_loose

@@ -33,6 +33,12 @@ MAX_MAP_CONCURRENCY = 6
 EXTRACT_TIMEOUT = 120  # seconds per extraction call
 OVERLAP_SEPARATOR = "[…context from previous section…]\n"
 
+# Abort-early threshold: if first-round MAP success rate < this, skip the
+# sequential retry phase. The retry costs ~len(failed) × timeout (e.g. 7 × 180s
+# = 21min). When the model is unresponsive/crashed, retry can't recover —
+# better to fail fast and surface the error so ops can fix the LLM.
+MIN_FIRST_ROUND_SUCCESS_RATE = 0.30
+
 # Pipeline-shape thresholds (D3). Sub-cases inside `single_pass` decide
 # whether to stuff (no MRP), single-MAP (no refine/resolve), or full MRP.
 STUFF_THRESHOLD_CHARS = 8_000
@@ -638,8 +644,19 @@ async def run_map_phase(
 
         await asyncio.gather(*[_extract_with_sem(c) for c in pending_chunks])
 
-    # Sequential retry for failed chunks
+    # Abort-early guard: if first-round success rate is below threshold, skip
+    # the sequential retry. A dying LLM won't recover within a retry window;
+    # better to surface failure now than burn ~len(failed) × timeout minutes.
+    first_round_done = sum(1 for c in chunks if existing_by_idx[c.index].status == "done")
+    first_round_rate = first_round_done / max(len(chunks), 1)
     error_chunks = [c for c in chunks if existing_by_idx[c.index].status == "error"]
+    if error_chunks and first_round_rate < MIN_FIRST_ROUND_SUCCESS_RATE:
+        logger.error(
+            f"MRP MAP: aborting retry — first-round success {first_round_done}/{len(chunks)} "
+            f"({first_round_rate:.0%}) below threshold {MIN_FIRST_ROUND_SUCCESS_RATE:.0%}. "
+            f"LLM likely unresponsive; fix model before re-running."
+        )
+        error_chunks = []
     if error_chunks:
         logger.info(f"MRP MAP: retrying {len(error_chunks)} failed chunks for source={source_id}")
         for chunk in error_chunks:
