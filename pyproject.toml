@@ -21,6 +21,9 @@ dependencies = [
     "google-genai>=1.0.0",
     "openai>=1.30.0",
     "anthropic>=0.30.0",
+    "lmstudio>=1.5.0,<2.0.0",
+    "sentence-transformers>=3.0.0",
+    "tenacity>=8.0.0",
     # MCP Server
     "fastmcp>=2.0.0",
     # Auth
@@ -45,6 +48,7 @@ dependencies = [
     "redis[hiredis]>=5.0",
     # Security
     "cryptography>=44.0",
+    "psutil>=5.9.0",
     "mammoth>=1.12.0",
 ]
 
@@ -61,6 +65,14 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = ["app*"]
+
+[tool.pytest.ini_options]
+markers = [
+    "slow: tests that take >30s",
+    "requires_lm_studio: tests requiring a running LM Studio host",
+    "e2e: end-to-end pipeline tests",
+]
+asyncio_mode = "auto"
 
 [tool.ruff]
 line-length = 88
