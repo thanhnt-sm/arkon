@@ -2,6 +2,8 @@
 
 Hướng dẫn vận hành pipeline xử lý tài liệu (MAP → REDUCE → PLAN → REFINE → VERIFY → COMMIT).
 
+**Related:** For local AI orchestrator (LM Studio on M1 Max), see [Local AI Orchestrator](./local-ai-orchestrator.md), [Model Checklist](./local-ai-model-checklist.md), [Migration Playbook](./local-ai-migration-playbook.md).
+
 ---
 
 ## Script `scripts/retry-sources.sh`

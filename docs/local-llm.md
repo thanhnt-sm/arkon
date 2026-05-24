@@ -3,6 +3,8 @@
 Quick reference for running arkon's MRP pipeline against a local LM Studio
 (profile=local) vs a cloud OpenAI-compatible endpoint (profile=cloud).
 
+**New:** For comprehensive local AI setup (model download, LM Studio config, K/V quantization, migration), see [Local AI Orchestrator](./local-ai-orchestrator.md) and [Model Checklist](./local-ai-model-checklist.md). This page covers legacy profile toggling.
+
 ## Toggle profile
 
 - SQL: `psql -c "UPDATE app_config SET value='cloud' WHERE key='llm_profile';"`
