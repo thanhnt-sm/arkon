@@ -9,10 +9,18 @@ Two writer modes:
   - Simple: 1 llm.generate() call for pages with few evidence items
   - Complex: mini agent loop (max 10 steps, 3 tools) for large pages
 
-All writers run in parallel (asyncio.Semaphore(MAX_WRITER_CONCURRENCY)).
+Fan-out is env-tuned via MRP_WRITER_CONCURRENCY:
+  - =1 (default): sequential loop with adaptive pacing + consecutive-stub
+    breaker, per-page commit to plan_json._page_drafts so mid-batch LM
+    crashes leave successful pages persisted.
+  - >1: bounded-semaphore + asyncio.gather (legacy fan-out, retained as
+    escape hatch when LM is healthy and faster batch is desired).
+See app/ai/mrp/writer_pacing.py for primitives, and
+plans/260524-1226-writer-sequential-and-lm-pacing/ for the spec.
 """
 
 import asyncio
+import os
 import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Optional
@@ -20,6 +28,11 @@ from typing import TYPE_CHECKING, Any, Optional
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.ai.mrp.writer_pacing import (
+    ConsecutiveStubBreaker,
+    LLMPacer,
+    is_stub_content,
+)
 from app.ai.providers.base import EmbeddingProvider, LLMProvider
 from app.utils.progress import ProgressTracker
 
@@ -30,8 +43,46 @@ if TYPE_CHECKING:
 # Constants
 # ---------------------------------------------------------------------------
 
-MAX_WRITER_CONCURRENCY = 1  # serial: a single local 26B model OOMs at 4-way fan-out
+DEFAULT_WRITER_CONCURRENCY = 1  # serial: a single local 26B model OOMs at 4-way fan-out
+
+
+def _safe_int_env(name: str, default: int, *, minimum: int = 1) -> int:
+    """Parse env var as int with floor; non-numeric or below-floor → default.
+
+    Avoids worker-boot crashes from malformed env (e.g. typo `MRP_WRITER_CONCURRENCY=abc`)
+    and footguns like `BREAKER_THRESHOLD=0` (would trip on first stub).
+    """
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return default
+    return value if value >= minimum else default
+
+
+WRITER_CONCURRENCY = _safe_int_env(
+    "MRP_WRITER_CONCURRENCY", DEFAULT_WRITER_CONCURRENCY, minimum=1
+)
 WRITER_COMPLEX_THRESHOLD_EVIDENCE = 8
+
+
+class WriterBatchIncomplete(Exception):
+    """Refine batch aborted before all pages drafted (breaker tripped).
+
+    Partial drafts ARE persisted in plan_json._page_drafts via per-page commit.
+    Caller must NOT advance pipeline_phase to 'verify' — retry should re-enter
+    REFINE so slug-skip + stub-retry refines remaining pages only.
+    """
+
+    def __init__(self, drafted: int, expected: int, reason: str = "breaker_tripped"):
+        self.drafted = drafted
+        self.expected = expected
+        self.reason = reason
+        super().__init__(
+            f"Writer batch incomplete: {drafted}/{expected} drafted ({reason})"
+        )
 WRITER_COMPLEX_THRESHOLD_EXISTING_CHARS = 3_000
 WRITER_AGENT_MAX_STEPS = 10
 WRITER_AGENT_TIMEOUT = 300  # seconds per LLM call in complex writer
@@ -753,6 +804,197 @@ async def _write_page_complex(
 
 
 # ---------------------------------------------------------------------------
+# Phase 3 orchestrator helpers
+# ---------------------------------------------------------------------------
+
+_LOGGED_EFFECTIVE_CONCURRENCY = False
+
+
+def log_effective_writer_concurrency() -> None:
+    """Emit the effective WRITER_CONCURRENCY once per process for ops visibility."""
+    global _LOGGED_EFFECTIVE_CONCURRENCY
+    if _LOGGED_EFFECTIVE_CONCURRENCY:
+        return
+    _LOGGED_EFFECTIVE_CONCURRENCY = True
+    logger.info(
+        f"MRP REFINE writer_concurrency={WRITER_CONCURRENCY} "
+        f"(env MRP_WRITER_CONCURRENCY, default={DEFAULT_WRITER_CONCURRENCY})"
+    )
+
+
+async def _commit_draft(
+    session: AsyncSession,
+    plan: "SourceCompilationPlan",
+    page: "PageWriteResult",
+) -> None:
+    """Append one page draft to plan_json._page_drafts and commit immediately.
+
+    Per-page commit ensures mid-batch crashes leave successful pages persisted,
+    instead of the old all-or-nothing batch commit at end of fan-out.
+    """
+    plan_json = dict(plan.plan_json or {})
+    drafts = list(plan_json.get("_page_drafts") or [])
+    drafts.append(page.to_dict())
+    plan_json["_page_drafts"] = drafts
+    plan.plan_json = plan_json
+    try:
+        await session.commit()
+    except Exception as exc:
+        # Rollback so the orchestrator session stays usable for the next page.
+        logger.warning(
+            f"MRP REFINE per-page commit failed slug={page.slug}: {exc}"
+        )
+        try:
+            await session.rollback()
+        except Exception:
+            pass
+        return
+    logger.info(
+        f"MRP REFINE committed draft slug={page.slug} ({len(drafts)} total)"
+    )
+
+
+async def _probe_llm_health(llm_base_url: Optional[str]) -> str:
+    """Returns 'ok' | 'slow' | 'fail'. Logs structured result. Never raises.
+
+    Single GET /v1/models call to surface degraded LM Studio state before
+    the batch starts. Build's evidence trail for crash post-mortem; batch
+    proceeds regardless of result.
+    """
+    if not llm_base_url:
+        logger.info("MRP REFINE pre-batch probe skipped (no base_url configured)")
+        return "ok"
+    import time
+    try:
+        import httpx
+    except ImportError:
+        logger.info("MRP REFINE pre-batch probe skipped (httpx unavailable)")
+        return "ok"
+    proxy = os.getenv("HTTP_PROXY") or os.getenv("HTTPS_PROXY")
+    try:
+        t0 = time.monotonic()
+        async with httpx.AsyncClient(timeout=10.0, proxy=proxy) as client:
+            r = await client.get(f"{llm_base_url.rstrip('/')}/models")
+            latency_ms = int((time.monotonic() - t0) * 1000)
+            if r.status_code != 200:
+                status = "fail"
+            elif latency_ms >= 5000:
+                status = "slow"
+            else:
+                status = "ok"
+            logger.info(
+                f"MRP REFINE pre-batch probe llm_base_url={llm_base_url} "
+                f"latency_ms={latency_ms} status={status}"
+            )
+            return status
+    except Exception as e:
+        logger.warning(
+            f"MRP REFINE pre-batch probe llm_base_url={llm_base_url} "
+            f"status=fail err={type(e).__name__}"
+        )
+        return "fail"
+
+
+async def _run_refine_sequential(
+    pages_spec: list[dict],
+    write_one,
+    session: AsyncSession,
+    plan: "SourceCompilationPlan",
+) -> list["PageWriteResult"]:
+    """Sequential writer loop with adaptive pacing + consecutive-stub breaker.
+
+    Each successful page commits immediately to plan_json._page_drafts. When
+    the breaker trips after N consecutive stubs, the loop aborts cleanly so
+    remaining pages are not hammered against a crashed LM.
+    """
+    pacer = LLMPacer(
+        base_ms=_safe_int_env("MRP_WRITER_PACE_BASE_MS", 0, minimum=0),
+        fail_ms=_safe_int_env("MRP_WRITER_PACE_FAIL_MS", 3000, minimum=0),
+    )
+    breaker = ConsecutiveStubBreaker(
+        threshold=_safe_int_env("MRP_WRITER_BREAKER_THRESHOLD", 3, minimum=1),
+    )
+
+    results: list[PageWriteResult] = []
+    total = len(pages_spec)
+    tripped = False
+    for idx, spec in enumerate(pages_spec, start=1):
+        result = await write_one(spec)
+        if result is None:
+            continue
+        results.append(result)
+        await _commit_draft(session, plan, result)
+
+        if is_stub_content(result.content_md):
+            pacer.report_outcome(False)
+            if breaker.trip():
+                logger.warning(
+                    f"MRP REFINE: breaker tripped after {breaker.threshold} consecutive "
+                    f"stubs — aborting batch ({idx}/{total} attempted, "
+                    f"{len(results)} drafts persisted)"
+                )
+                tripped = True
+                break
+        else:
+            pacer.report_outcome(True)
+            breaker.reset_on_success()
+
+        # Skip pacing on the last iteration — no next call to pace.
+        if idx < total:
+            await pacer.wait()
+
+    if tripped:
+        raise WriterBatchIncomplete(drafted=len(results), expected=total)
+    return results
+
+
+async def _run_refine_parallel(
+    concurrency: int,
+    pages_spec: list[dict],
+    write_one,
+    session: AsyncSession,
+    plan: "SourceCompilationPlan",
+) -> list["PageWriteResult"]:
+    """Escape-hatch parallel mode: bounded semaphore + asyncio.gather with
+    per-page commit. Breaker is best-effort — short-circuits unstarted tasks
+    when threshold tripped, but in-flight HTTP calls run to completion."""
+    semaphore = asyncio.Semaphore(concurrency)
+    breaker = ConsecutiveStubBreaker(
+        threshold=_safe_int_env("MRP_WRITER_BREAKER_THRESHOLD", 3, minimum=1),
+    )
+    cancel_event = asyncio.Event()
+    commit_lock = asyncio.Lock()  # serialize plan_json read-modify-write
+
+    async def _bounded(spec: dict) -> Optional[PageWriteResult]:
+        if cancel_event.is_set():
+            return None
+        async with semaphore:
+            if cancel_event.is_set():
+                return None
+            result = await write_one(spec)
+            if result is None:
+                return None
+            async with commit_lock:
+                await _commit_draft(session, plan, result)
+                if is_stub_content(result.content_md):
+                    if breaker.trip():
+                        cancel_event.set()
+                        logger.warning(
+                            f"MRP REFINE: breaker tripped after {breaker.threshold} "
+                            f"consecutive stubs (parallel mode) — cancelling unstarted tasks"
+                        )
+                else:
+                    breaker.reset_on_success()
+            return result
+
+    raw = await asyncio.gather(*[_bounded(p) for p in pages_spec])
+    results = [r for r in raw if r is not None]
+    if cancel_event.is_set():
+        raise WriterBatchIncomplete(drafted=len(results), expected=len(pages_spec))
+    return results
+
+
+# ---------------------------------------------------------------------------
 # Phase 3 orchestrator
 # ---------------------------------------------------------------------------
 
@@ -790,87 +1032,153 @@ async def run_refine_phase(
 
     from app.database import async_session_factory
 
-    semaphore = asyncio.Semaphore(MAX_WRITER_CONCURRENCY)
+    # Idempotent resume: keep REAL drafts, drop STUBS so they get re-attempted.
+    # After a breaker-tripped partial batch, the last few drafts will be stubs;
+    # treating them as "done" would silently ship failed pages.
+    existing_drafts_raw = list((plan.plan_json or {}).get("_page_drafts") or [])
+    real_drafts_raw: list[dict] = []
+    stub_count = 0
+    for d in existing_drafts_raw:
+        if not isinstance(d, dict) or not d.get("slug"):
+            continue
+        if is_stub_content(d.get("content_md")):
+            stub_count += 1
+        else:
+            real_drafts_raw.append(d)
+
+    # Flush stubs out of plan_json before retry so per-page commits don't
+    # duplicate slugs in the persisted list.
+    if stub_count > 0:
+        plan_json_clean = dict(plan.plan_json or {})
+        plan_json_clean["_page_drafts"] = real_drafts_raw
+        plan.plan_json = plan_json_clean
+        try:
+            await session.commit()
+            logger.info(
+                f"MRP REFINE resume: dropped {stub_count} stub drafts for retry"
+            )
+        except Exception as exc:
+            logger.error(
+                f"MRP REFINE resume: failed to prune stub drafts ({exc!r}) — "
+                f"continuing; stubs will overwrite via per-page commit"
+            )
+            try:
+                await session.rollback()
+            except Exception as rb_exc:
+                logger.error(f"MRP REFINE rollback after prune failure also failed: {rb_exc!r}")
+
+    already_drafted_slugs = {d["slug"] for d in real_drafts_raw}
+    if already_drafted_slugs:
+        before = len(pages_spec)
+        pages_spec = [p for p in pages_spec if p.get("slug") not in already_drafted_slugs]
+        skipped = before - len(pages_spec)
+        if skipped:
+            logger.info(
+                f"MRP REFINE resume: {skipped}/{before} real drafts kept, "
+                f"writing {len(pages_spec)} remaining"
+            )
+
+    # Pre-batch LLM health probe (fire-and-log; never raises, batch proceeds regardless).
+    await _probe_llm_health(getattr(llm.config, "base_url", None))
+
+    log_effective_writer_concurrency()
 
     async def _write_one(plan_item: dict) -> Optional[PageWriteResult]:
-        async with semaphore:
-            action = plan_item.get("action", "CREATE").upper()
-            slug = plan_item.get("slug", "")
-            title = plan_item.get("title", slug)
-            page_type = plan_item.get("page_type", "concept")
-            related_kb_pages = plan_item.get("related_kb_pages", [])
+        action = plan_item.get("action", "CREATE").upper()
+        slug = plan_item.get("slug", "")
+        title = plan_item.get("title", slug)
+        page_type = plan_item.get("page_type", "concept")
+        related_kb_pages = plan_item.get("related_kb_pages", [])
 
-            # Assemble evidence
-            evidence = assemble_evidence(plan_item, all_claims, full_text)
+        # Assemble evidence
+        evidence = assemble_evidence(plan_item, all_claims, full_text)
 
-            # Each writer owns its own AsyncSession — SQLAlchemy AsyncSession is not
-            # safe for concurrent use, so sharing the orchestrator's session across
-            # the asyncio.gather fan-out previously caused race conditions when
-            # multiple writers hit the DB at the same time.
-            async with async_session_factory() as worker_session:
-                # Fetch existing content for UPDATE
-                existing_content: Optional[str] = None
-                if action == "UPDATE":
-                    existing_page = await wiki_service.get_page_by_slug(
-                        worker_session, slug, scope_type=scope_type, scope_id=scope_id,
+        # Each writer owns its own AsyncSession — SQLAlchemy AsyncSession is not
+        # safe for concurrent use, so sharing the orchestrator's session across
+        # parallel writers previously caused race conditions.
+        async with async_session_factory() as worker_session:
+            # Fetch existing content for UPDATE
+            existing_content: Optional[str] = None
+            if action == "UPDATE":
+                existing_page = await wiki_service.get_page_by_slug(
+                    worker_session, slug, scope_type=scope_type, scope_id=scope_id,
+                )
+                if existing_page:
+                    existing_content = existing_page.content_md
+
+            # Choose writer mode
+            is_complex = (
+                len(evidence) > WRITER_COMPLEX_THRESHOLD_EVIDENCE
+                or len(existing_content or "") > WRITER_COMPLEX_THRESHOLD_EXISTING_CHARS
+            )
+
+            # Build source context for the writer
+            source_context = _build_source_context(full_text, evidence, llm=llm)
+            image_markers = _collect_relevant_image_markers(evidence, full_text)
+
+            try:
+                if is_complex:
+                    content_md, summary, citations = await _write_page_complex(
+                        llm, plan_item, evidence, existing_content, full_text, worker_session, source,
+                        all_plan_slugs=all_plan_slugs,
                     )
-                    if existing_page:
-                        existing_content = existing_page.content_md
+                else:
+                    content_md, summary, citations = await _write_page_simple(
+                        llm, plan_item, evidence, existing_content,
+                        all_plan_slugs=all_plan_slugs,
+                        source_context=source_context,
+                        image_markers=image_markers,
+                    )
+            except Exception as e:
+                err_msg = f"{type(e).__name__}: {str(e)}"
+                logger.error(f"MRP REFINE writer failed for '{slug}': {err_msg}")
+                # Return minimal stub so COMMIT can still proceed
+                content_md = f"# {title}\n\n(Page generation failed: {err_msg[:200]})"
+                summary = title
+                citations = []
 
-                # Choose writer mode
-                is_complex = (
-                    len(evidence) > WRITER_COMPLEX_THRESHOLD_EVIDENCE
-                    or len(existing_content or "") > WRITER_COMPLEX_THRESHOLD_EXISTING_CHARS
-                )
+            return PageWriteResult(
+                slug=slug,
+                title=title,
+                page_type=page_type,
+                action=action,
+                content_md=content_md,
+                summary=summary,
+                citations=citations,
+                entity_names=plan_item.get("entity_names", []),
+                related_kb_pages=related_kb_pages,
+            )
 
-                # Build source context for the writer
-                source_context = _build_source_context(full_text, evidence, llm=llm)
-                image_markers = _collect_relevant_image_markers(evidence, full_text)
+    # Real drafts already on disk (stubs were pruned above) — load and prepend.
+    existing_drafts: list[PageWriteResult] = []
+    for d in real_drafts_raw:
+        try:
+            existing_drafts.append(PageWriteResult.from_dict(d))
+        except Exception:
+            continue
 
-                try:
-                    if is_complex:
-                        content_md, summary, citations = await _write_page_complex(
-                            llm, plan_item, evidence, existing_content, full_text, worker_session, source,
-                            all_plan_slugs=all_plan_slugs,
-                        )
-                    else:
-                        content_md, summary, citations = await _write_page_simple(
-                            llm, plan_item, evidence, existing_content,
-                            all_plan_slugs=all_plan_slugs,
-                            source_context=source_context,
-                            image_markers=image_markers,
-                        )
-                except Exception as e:
-                    err_msg = f"{type(e).__name__}: {str(e)}"
-                    logger.error(f"MRP REFINE writer failed for '{slug}': {err_msg}")
-                    # Return minimal stub so COMMIT can still proceed
-                    content_md = f"# {title}\n\n(Page generation failed: {err_msg[:200]})"
-                    summary = title
-                    citations = []
+    if not pages_spec:
+        logger.info(
+            f"MRP REFINE: nothing to write — all {len(existing_drafts)} slugs already drafted"
+        )
+        return existing_drafts
 
-                return PageWriteResult(
-                    slug=slug,
-                    title=title,
-                    page_type=page_type,
-                    action=action,
-                    content_md=content_md,
-                    summary=summary,
-                    citations=citations,
-                    entity_names=plan_item.get("entity_names", []),
-                    related_kb_pages=related_kb_pages,
-                )
+    if WRITER_CONCURRENCY <= 1:
+        new_results = await _run_refine_sequential(
+            pages_spec=pages_spec,
+            write_one=_write_one,
+            session=session,
+            plan=plan,
+        )
+    else:
+        new_results = await _run_refine_parallel(
+            concurrency=WRITER_CONCURRENCY,
+            pages_spec=pages_spec,
+            write_one=_write_one,
+            session=session,
+            plan=plan,
+        )
 
-    results = await asyncio.gather(*[_write_one(p) for p in pages_spec])
-    page_results = [r for r in results if r is not None]
-
-    # Persist drafts into plan_json so VERIFY/COMMIT can resume without re-running REFINE.
-    try:
-        plan_json = dict(plan.plan_json or {})
-        plan_json["_page_drafts"] = [pr.to_dict() for pr in page_results]
-        plan.plan_json = plan_json
-        await session.commit()
-    except Exception as exc:
-        logger.warning(f"MRP REFINE failed to persist page drafts: {exc}")
-
+    page_results = existing_drafts + new_results
     logger.info(f"MRP REFINE complete: {len(page_results)} pages written for source={source.id}")
     return page_results

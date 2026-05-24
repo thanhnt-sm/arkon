@@ -112,6 +112,44 @@ docker exec arkon_worker env | grep MRP_TIMEOUT
 
 ---
 
+## Writer Pacing & Breaker (REFINE phase)
+
+Phase REFINE chạy 1 writer/page. Khi LM Studio crash mid-batch, writer cũ
+(`asyncio.gather` + commit cuối) làm mất hết kết quả thành công. Refactor
+2026-05-24 đổi sang **sequential loop + per-page commit + consecutive-stub
+breaker** — pages thành công persist ngay, batch tự abort khi LM degraded.
+
+| Env var | Mặc định | Mô tả |
+|---------|----------|-------|
+| `MRP_WRITER_CONCURRENCY` | `1` | `1` = sequential (recommended cho local LLM). `>1` = parallel `asyncio.gather` + semaphore (escape hatch, dùng khi LM khỏe). |
+| `MRP_WRITER_PACE_BASE_MS` | `0` | Delay giữa các page khi LM healthy. |
+| `MRP_WRITER_PACE_FAIL_MS` | `3000` | Delay giữa các page sau khi gặp stub (auto-reset về `base_ms` sau 3 success liên tiếp). |
+| `MRP_WRITER_BREAKER_THRESHOLD` | `3` | Abort batch sau N stub liên tiếp. Trip → log warning + dừng vòng lặp. |
+
+**Hành vi:**
+
+- Mỗi page commit vào `plan_json._page_drafts` ngay sau khi sinh ra → LM crash giữa batch không mất pages-before-crash.
+- Breaker trip ⇒ writer raise `WriterBatchIncomplete`, pipeline.py **không** advance `pipeline_phase` lên `verify` (giữ ở `refine`), set `source.status='failed'` với `error_message` mô tả số page đã/chưa drafted. Re-run retry sẽ re-enter REFINE, skip slugs **real-drafted**, retry các **stub** và pages còn thiếu.
+- Stub trong `_page_drafts` (do batch trước trip) bị prune trước khi loop mới chạy — KHÔNG được ship làm "ready". Real drafts được giữ.
+- Pre-batch probe (`GET /v1/models`) log structured latency để soi LM health trước khi spawn batch: `MRP REFINE pre-batch probe ... latency_ms=NN status=ok|slow|fail`.
+- Parallel mode (`MRP_WRITER_CONCURRENCY>1`) giữ per-page commit + breaker, nhưng breaker là best-effort (chỉ cancel tasks chưa bắt đầu); in-flight HTTP calls vẫn chạy đến hết.
+- Env values bị malformed (e.g. `MRP_WRITER_CONCURRENCY=abc`, `=0`, `=-1`) fallback về default thay vì crash worker boot.
+
+**Cập nhật:**
+
+```bash
+# .env.docker
+MRP_WRITER_CONCURRENCY=1
+MRP_WRITER_PACE_BASE_MS=0
+MRP_WRITER_PACE_FAIL_MS=3000
+MRP_WRITER_BREAKER_THRESHOLD=3
+
+docker compose --env-file .env.docker up -d worker
+docker exec arkon_worker env | grep MRP_WRITER
+```
+
+---
+
 ## Trạng thái Pipeline
 
 | Status | Pipeline phase | Ý nghĩa |

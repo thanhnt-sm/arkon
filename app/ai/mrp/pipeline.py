@@ -25,7 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.ai.mrp.mapper import run_map_phase
 from app.ai.mrp.reducer import run_reduce_phase
 from app.ai.mrp.verifier import run_verify_phase
-from app.ai.mrp.writer import PageWriteResult, run_refine_phase
+from app.ai.mrp.writer import PageWriteResult, WriterBatchIncomplete, run_refine_phase
 from app.utils.progress import ProgressTracker
 
 
@@ -523,17 +523,38 @@ async def run_refine_pipeline(
         plan.status = "in_progress"
         await session.commit()
 
-        page_results = await run_refine_phase(
-            session=session,
-            source=source,
-            plan=plan,
-            chunk_extracts=chunk_extracts,
-            full_text=full_text,
-            llm=llm,
-            embedding_provider=embedding_provider,
-            kt_slug=kt_slug,
-            tracker=tracker,
-        )
+        try:
+            page_results = await run_refine_phase(
+                session=session,
+                source=source,
+                plan=plan,
+                chunk_extracts=chunk_extracts,
+                full_text=full_text,
+                llm=llm,
+                embedding_provider=embedding_provider,
+                kt_slug=kt_slug,
+                tracker=tracker,
+            )
+        except WriterBatchIncomplete as exc:
+            # Breaker tripped — partial drafts already persisted via per-page commit.
+            # Keep pipeline_phase='refine' so retry re-enters REFINE (slug-skip will
+            # finish remaining pages). Mark source as failed for the retry workflow.
+            logger.warning(
+                f"MRP REFINE incomplete for source={source_id}: "
+                f"{exc.drafted}/{exc.expected} drafted ({exc.reason}) — "
+                f"keeping phase=refine for retry"
+            )
+            src = await session.get(Source, source_id)
+            if src:
+                # 'error' aligns with retry-sources.sh AUTO mode (status IN ('error',
+                # 'plan_ready')) and the /sources/{id}/retry API allowlist.
+                src.status = "error"
+                src.error_message = (
+                    f"writer batch incomplete: {exc.drafted}/{exc.expected} drafted; "
+                    f"retry will refine remaining pages"
+                )[:500]
+            await session.commit()
+            raise
 
         src = await session.get(Source, source_id)
         if src:
@@ -554,17 +575,32 @@ async def run_refine_pipeline(
                 src.pipeline_phase = "refine"
             await session.commit()
 
-            page_results = await run_refine_phase(
-                session=session,
-                source=source,
-                plan=plan,
-                chunk_extracts=chunk_extracts,
-                full_text=full_text,
-                llm=llm,
-                embedding_provider=embedding_provider,
-                kt_slug=kt_slug,
-                tracker=tracker,
-            )
+            try:
+                page_results = await run_refine_phase(
+                    session=session,
+                    source=source,
+                    plan=plan,
+                    chunk_extracts=chunk_extracts,
+                    full_text=full_text,
+                    llm=llm,
+                    embedding_provider=embedding_provider,
+                    kt_slug=kt_slug,
+                    tracker=tracker,
+                )
+            except WriterBatchIncomplete as exc:
+                logger.warning(
+                    f"MRP REFINE incomplete on resume for source={source_id}: "
+                    f"{exc.drafted}/{exc.expected} drafted ({exc.reason})"
+                )
+                src = await session.get(Source, source_id)
+                if src:
+                    src.status = "error"
+                    src.pipeline_phase = "refine"
+                    src.error_message = (
+                        f"writer batch incomplete: {exc.drafted}/{exc.expected} drafted"
+                    )[:500]
+                await session.commit()
+                raise
 
         src = await session.get(Source, source_id)
         if src:
