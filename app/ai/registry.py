@@ -74,6 +74,26 @@ def _get_vision_class(provider: ProviderType) -> type[VisionProvider]:
 
 
 # ---------------------------------------------------------------------------
+# Local AI guard helper
+# ---------------------------------------------------------------------------
+
+
+async def _local_ai_active(db) -> bool:
+    """Return True when local_ai.mode != "off".
+
+    Lazy import avoids circular dependency — local_orchestrator imports
+    config_service, registry must not import local_orchestrator at module level.
+    """
+    try:
+        from app.ai.local_orchestrator import load_config
+
+        cfg = await load_config(db)
+        return cfg.mode != "off"
+    except Exception:
+        return False
+
+
+# ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
 
@@ -106,6 +126,23 @@ class ProviderRegistry:
                      to embed against a NEW model while the active spec is
                      still pointing at the OLD one (atomic flip on completion).
         """
+        # Local AI override — gated on local_ai.mode != "off"
+        if await _local_ai_active(self.db):
+            from app.ai.local_orchestrator import load_config
+            from app.ai.local_orchestrator.phase_router import get_router
+            from app.ai.local_orchestrator.provider_adapter import (
+                LocalOrchestratorEmbedding,
+            )
+
+            cfg = await load_config(self.db)
+            router = await get_router(self.db)
+            prov_cfg = ProviderConfig(
+                provider=ProviderType.OPENAI,  # placeholder; adapter ignores it
+                model_id=cfg.embedding.model_id,
+                base_url=cfg.lms_host,
+            )
+            return LocalOrchestratorEmbedding(prov_cfg, router)
+
         config = await self._load_embedding_config(spec_id=spec_id)
         config.extra["task"] = task
         cls = _get_embedding_class(config.provider)
@@ -127,6 +164,21 @@ class ProviderRegistry:
 
     async def get_llm(self) -> LLMProvider:
         """Get the configured LLM provider with runtime profile attached."""
+        # Local AI override — gated on local_ai.mode != "off"
+        if await _local_ai_active(self.db):
+            from app.ai.local_orchestrator import load_config
+            from app.ai.local_orchestrator.phase_router import get_router
+            from app.ai.local_orchestrator.provider_adapter import LocalOrchestratorLLM
+
+            cfg = await load_config(self.db)
+            router = await get_router(self.db)
+            prov_cfg = ProviderConfig(
+                provider=ProviderType.OPENAI,  # placeholder; adapter ignores it
+                model_id=cfg.main_llm.model_id,
+                base_url=cfg.lms_host,
+            )
+            return LocalOrchestratorLLM(prov_cfg, router)
+
         config = await self._load_llm_config()
         cls = _get_llm_class(config.provider)
         instance = cls(config)
@@ -171,6 +223,23 @@ class ProviderRegistry:
 
     async def get_vision(self) -> Optional[VisionProvider]:
         """Get the configured vision provider. Returns None if not configured."""
+        # Local AI override — gated on local_ai.mode != "off"
+        if await _local_ai_active(self.db):
+            from app.ai.local_orchestrator import load_config
+            from app.ai.local_orchestrator.phase_router import get_router
+            from app.ai.local_orchestrator.provider_adapter import (
+                LocalOrchestratorVision,
+            )
+
+            cfg = await load_config(self.db)
+            router = await get_router(self.db)
+            prov_cfg = ProviderConfig(
+                provider=ProviderType.OPENAI,  # placeholder; adapter ignores it
+                model_id=cfg.vision.model_id,
+                base_url=cfg.lms_host,
+            )
+            return LocalOrchestratorVision(prov_cfg, router)
+
         try:
             config = await self._load_vision_config()
         except ValueError:
