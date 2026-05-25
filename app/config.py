@@ -85,6 +85,10 @@ class Settings(BaseSettings):
         default=24,
         description="Orphan sources stuck in 'awaiting_approval' longer than this are auto-deleted by cleanup cron.",
     )
+    max_auto_recover_attempts: int = Field(
+        default=3,
+        description="Max times a source may be auto-flipped from stuck 'processing' back to 'error' before the retry API refuses further attempts. Prevents token-burning loops when the failure is deterministic (bad provider key, malformed file).",
+    )
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 

@@ -212,6 +212,7 @@ async def run_commit_phase(
         src.progress = 100
         src.progress_message = "Done"
         src.error_message = None
+        src.auto_recover_count = 0
 
     await session.commit()
 

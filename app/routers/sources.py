@@ -18,6 +18,7 @@ from sqlalchemy import exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.config import settings
 from app.database import get_db
 from app.database.models import Employee, ScopeType, Source, SourceDepartment, WikiPage
 from app.database.repository import Repository
@@ -60,6 +61,7 @@ class SourceResponse(BaseModel):
     wiki_page_count: int = 0
     extracted_token_count: Optional[int] = None
     image_count: int = 0
+    auto_recover_count: int = 0
     knowledge_type_id: Optional[uuid.UUID] = None
     knowledge_type_name: Optional[str] = None
     knowledge_type_color: Optional[str] = None
@@ -135,6 +137,7 @@ def _to_response(source: Source, wiki_page_count: int = 0, image_count: int = 0)
         wiki_page_count=wiki_page_count,
         extracted_token_count=source.extracted_token_count,
         image_count=image_count,
+        auto_recover_count=source.auto_recover_count or 0,
         knowledge_type_id=source.knowledge_type_id,
         knowledge_type_name=source.knowledge_type.name if source.knowledge_type else None,
         knowledge_type_color=source.knowledge_type.color if source.knowledge_type else None,
@@ -551,6 +554,19 @@ async def retry_source(
         raise HTTPException(
             status_code=400,
             detail=f"Retry is only allowed for sources in {allowed_statuses} status",
+        )
+    # Block runaway loops: if the sweep cron has flipped this source back to
+    # 'error' too many times in a row, the failure is almost certainly
+    # deterministic (bad provider key, malformed file). Force human review.
+    cap = settings.max_auto_recover_attempts
+    if (source.auto_recover_count or 0) >= cap and _user.role != "admin":
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"This source has failed {source.auto_recover_count} consecutive "
+                f"auto-recoveries (cap={cap}). Check LLM provider config and the "
+                f"source file, then ask an admin to reset and retry."
+            ),
         )
     if source.source_type == "url" and not source.url:
         raise HTTPException(status_code=400, detail="Source has no URL to retry")

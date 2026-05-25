@@ -128,6 +128,12 @@ class Source(Base):
         Integer, nullable=True,
         comment="tiktoken cl100k_base count of full_text. Used by upload gate.",
     )
+    auto_recover_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0",
+        comment="Times sweep_stuck_processing_cron has flipped this source from "
+                "'processing' back to 'error'. Reset on successful plan_ready/ready. "
+                "Gated by settings.max_auto_recover_attempts.",
+    )
     pipeline_strategy: Mapped[Optional[str]] = mapped_column(
         String(20), nullable=True,
         comment="single_pass | standard | hierarchical — set by Phase 0 triage",
