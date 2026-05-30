@@ -14,6 +14,7 @@ Steps:
 
 import asyncio
 import string
+from collections import Counter
 from typing import TYPE_CHECKING, Optional, Union
 
 from loguru import logger
@@ -22,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai.providers.base import EmbeddingProvider, LLMProvider
 from app.config import settings
+from app.utils.text import slugify
 from app.utils.progress import ProgressTracker
 
 if TYPE_CHECKING:
@@ -35,6 +37,87 @@ MERGE_THRESHOLD = 0.90      # cosine sim → auto-merge entities
 AMBIGUOUS_LOW = 0.75        # cosine sim → send to LLM for disambiguation
 KB_UPDATE_THRESHOLD = 0.85  # sim → UPDATE existing wiki page
 KB_MAYBE_THRESHOLD = 0.60   # sim → MAYBE update (LLM confirms)
+
+
+def _target_page_count(strategy: str, total_extracted_items: int) -> int:
+    if strategy == "single_pass":
+        return max(3, min(15, total_extracted_items // 2))
+    if strategy == "standard":
+        return max(8, min(30, total_extracted_items // 3))
+    return max(15, min(60, total_extracted_items // 3))
+
+
+def _build_fallback_pages(
+    source,
+    strategy: str,
+    canonical_entities: list[dict],
+    canonical_concepts: list[dict],
+    raw_claims: list[dict],
+) -> list[dict]:
+    """Build a deterministic page plan when the LLM returns no pages."""
+    target = min(12, _target_page_count(strategy, len(canonical_entities) + len(canonical_concepts)))
+    used_slugs: set[str] = set()
+    used_names: set[str] = set()
+    pages: list[dict] = []
+
+    def _add(name: str, page_type: str, entity_names: list[str]) -> None:
+        clean_name = (name or "").strip()
+        if not clean_name:
+            return
+        norm = clean_name.lower()
+        if norm in used_names:
+            return
+        prefix = "source" if page_type == "source" else page_type
+        base_slug = slugify(clean_name)[:80] or "untitled"
+        slug = f"{prefix}/{base_slug}"
+        suffix = 2
+        while slug in used_slugs:
+            slug = f"{prefix}/{base_slug}-{suffix}"
+            suffix += 1
+        used_names.add(norm)
+        used_slugs.add(slug)
+        pages.append(
+            {
+                "action": "CREATE",
+                "slug": slug,
+                "title": clean_name,
+                "page_type": page_type,
+                "entity_names": [n for n in entity_names if n],
+                "related_kb_pages": [],
+                "priority": len(pages) + 1,
+            }
+        )
+
+    source_title = source.title or source.file_name or str(source.id)
+    top_subjects = [
+        subject
+        for subject, _count in Counter(
+            (claim.get("subject") or "").strip()
+            for claim in raw_claims
+            if (claim.get("subject") or "").strip()
+        ).most_common(max(6, target))
+    ]
+    _add(source_title, "source", top_subjects[:6])
+
+    for subject in top_subjects:
+        if len(pages) >= target:
+            break
+        _add(subject, "concept", [subject])
+
+    for concept in sorted(canonical_concepts, key=lambda c: c.get("mention_count", 0), reverse=True):
+        if len(pages) >= target:
+            break
+        term = concept.get("term", "")
+        _add(term, "concept", [term])
+
+    for entity in sorted(canonical_entities, key=lambda e: e.get("mention_count", 0), reverse=True):
+        if len(pages) >= target:
+            break
+        name = entity.get("name", "")
+        aliases = entity.get("aliases") or []
+        _add(name, "entity", [name, *aliases[:3]])
+
+    return pages
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -509,14 +592,7 @@ async def run_planning_call(
     """Single LLM call to produce the Compilation Plan JSON."""
     # Calculate target based on the actual number of extracted concepts rather than just document length
     total_extracted_items = len(canonical_entities) + len(canonical_concepts)
-    
-    if strategy == "single_pass":
-        # Usually 1 page per 2-3 items, minimum 3, maximum 15
-        target_pages = max(3, min(15, total_extracted_items // 2))
-    elif strategy == "standard":
-        target_pages = max(8, min(30, total_extracted_items // 3))
-    else:
-        target_pages = max(15, min(60, total_extracted_items // 3))
+    target_pages = _target_page_count(strategy, total_extracted_items)
 
     kt_context = kt_name or "(no specific knowledge type)"
     if kt_desc:
@@ -652,6 +728,21 @@ async def run_reduce_phase(
         kt_name=kt_name,
         kt_desc=kt_desc,
     )
+    if not plan_dict.get("pages"):
+        fallback_pages = _build_fallback_pages(
+            source=source,
+            strategy=strategy,
+            canonical_entities=canonical_entities,
+            canonical_concepts=canonical_concepts,
+            raw_claims=raw_claims,
+        )
+        plan_dict["pages"] = fallback_pages
+        plan_dict["source_page_slug"] = fallback_pages[0]["slug"] if fallback_pages else ""
+        plan_dict["estimated_page_count"] = len(fallback_pages)
+        plan_dict["compilation_notes"] = (
+            (plan_dict.get("compilation_notes") or "").strip()
+            + "\nFallback page plan generated because REDUCE returned no pages."
+        ).strip()
 
     # Attach claim evidence to plan (so REFINE can access claims per entity)
     plan_dict["_claims"] = raw_claims

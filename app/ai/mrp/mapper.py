@@ -113,12 +113,17 @@ def _flatten_outline(nodes: list, depth: int = 0) -> list[dict]:
     return result
 
 
-def build_chunks(full_text: str, outline_json: Optional[list], strategy: str) -> list[DocumentChunk]:
+def build_chunks(
+    full_text: str,
+    outline_json: Optional[list],
+    strategy: str,
+    target_chars: int = CHUNK_TARGET_CHARS,
+) -> list[DocumentChunk]:
     """
     Split full_text into DocumentChunks for MAP extraction.
 
     Uses level-1 and level-2 outline headings as section boundaries. Groups
-    sections until accumulated chars exceed CHUNK_TARGET_CHARS. If outline is
+    sections until accumulated chars exceed target_chars. If outline is
     absent or empty, falls back to a sliding-window split.
 
     The overlap prefix is prepended to each chunk's text for LLM context but
@@ -130,7 +135,7 @@ def build_chunks(full_text: str, outline_json: Optional[list], strategy: str) ->
     top_nodes.sort(key=lambda n: n["char_start"])
 
     if not top_nodes:
-        return _sliding_window_chunks(full_text)
+        return _sliding_window_chunks(full_text, target_chars=target_chars)
 
     chunks: list[DocumentChunk] = []
     current_start: Optional[int] = None
@@ -178,7 +183,7 @@ def build_chunks(full_text: str, outline_json: Optional[list], strategy: str) ->
         accumulated = current_end - current_start
         section_size = ne - ns
 
-        if accumulated + section_size > CHUNK_TARGET_CHARS and accumulated > 0:
+        if accumulated + section_size > target_chars and accumulated > 0:
             chunk = _flush(idx, current_start, current_end, current_sections)
             chunks.append(chunk)
             prev_body_end = current_end
@@ -206,10 +211,13 @@ def build_chunks(full_text: str, outline_json: Optional[list], strategy: str) ->
             tail_chunk = _flush(idx, remainder_start, len(full_text), [f"tail_{idx}"])
             chunks.append(tail_chunk)
 
-    return chunks if chunks else _sliding_window_chunks(full_text)
+    return chunks if chunks else _sliding_window_chunks(full_text, target_chars=target_chars)
 
 
-def _sliding_window_chunks(full_text: str) -> list[DocumentChunk]:
+def _sliding_window_chunks(
+    full_text: str,
+    target_chars: int = CHUNK_TARGET_CHARS,
+) -> list[DocumentChunk]:
     """Fallback: fixed-size windows with overlap when no outline is available."""
     chunks = []
     n = len(full_text)
@@ -217,7 +225,7 @@ def _sliding_window_chunks(full_text: str) -> list[DocumentChunk]:
     pos = 0
     prev_end = 0
     while pos < n:
-        end = min(pos + CHUNK_TARGET_CHARS, n)
+        end = min(pos + target_chars, n)
         body = full_text[pos:end]
         if idx > 0 and prev_end > 0:
             overlap_start = max(0, prev_end - OVERLAP_CHARS)
@@ -556,15 +564,17 @@ async def run_map_phase(
     profile = getattr(llm, "runtime_profile", None)
     concurrency = profile.concurrency if profile else MAX_MAP_CONCURRENCY
     extract_timeout = profile.extract_timeout_s if profile else EXTRACT_TIMEOUT
+    chunk_target_chars = profile.chunk_chars if profile else CHUNK_TARGET_CHARS
     pipeline_shape = classify_pipeline_shape(full_text)
 
     strategy = classify_strategy(full_text, outline_json)
     logger.info(
         f"MRP: source={source_id} strategy={strategy} shape={pipeline_shape} "
-        f"len={len(full_text)} concurrency={concurrency} timeout={extract_timeout}s"
+        f"len={len(full_text)} chunk_target={chunk_target_chars} "
+        f"concurrency={concurrency} timeout={extract_timeout}s"
     )
 
-    chunks = build_chunks(full_text, outline_json, strategy)
+    chunks = build_chunks(full_text, outline_json, strategy, target_chars=chunk_target_chars)
     logger.info(f"MRP MAP: {len(chunks)} chunks for source={source_id}")
 
     # Update source pipeline state
@@ -582,7 +592,8 @@ async def run_map_phase(
 
     # Ensure a DB row exists for every chunk
     for chunk in chunks:
-        if chunk.index not in existing_by_idx:
+        row = existing_by_idx.get(chunk.index)
+        if row is None:
             row = SourceChunkExtract(
                 source_id=source_id,
                 chunk_index=chunk.index,
@@ -593,6 +604,17 @@ async def run_map_phase(
             )
             session.add(row)
             existing_by_idx[chunk.index] = row
+        elif (
+            row.start_char != chunk.start_char
+            or row.end_char != chunk.end_char
+            or row.section_path != chunk.section_path
+        ):
+            row.start_char = chunk.start_char
+            row.end_char = chunk.end_char
+            row.section_path = chunk.section_path
+            row.extract_json = None
+            row.status = "pending"
+            row.error_message = None
     await session.commit()
 
     # Reload after flush so IDs are populated

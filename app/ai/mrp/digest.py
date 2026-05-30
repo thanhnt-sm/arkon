@@ -125,6 +125,27 @@ def _inject_related_pages(content_md: str, page_slugs: list[str]) -> str:
     return content_md + "\n" + "\n".join(section) + "\n"
 
 
+def _draft_pages_by_slug(page_drafts: list[dict]) -> dict[str, dict]:
+    """Return fresh REFINE drafts keyed by slug.
+
+    Flat digest runs before COMMIT, so reading WikiPage rows can pull stale
+    content from the previous run. Prefer plan_json._page_drafts when present.
+    """
+    by_slug: dict[str, dict] = {}
+    for draft in page_drafts or []:
+        if not isinstance(draft, dict):
+            continue
+        slug = (draft.get("slug") or "").strip()
+        content_md = draft.get("content_md") or ""
+        if not slug or not content_md:
+            continue
+        by_slug[slug] = {
+            "title": draft.get("title") or slug,
+            "content_md": content_md,
+        }
+    return by_slug
+
+
 # ---------------------------------------------------------------------------
 # Strategies
 # ---------------------------------------------------------------------------
@@ -188,7 +209,12 @@ async def _digest_with_outline(
 
 
 async def _digest_flat_narrative(
-    source, plan: CompilationPlanJson, llm: LLMProvider, profile, db: AsyncSession
+    source,
+    plan: CompilationPlanJson,
+    llm: LLMProvider,
+    profile,
+    db: AsyncSession,
+    page_drafts: Optional[list[dict]] = None,
 ) -> str:
     """Flat strategy — TOC of sub-pages + plan summary + first-N chars per page."""
     from app.database.models import WikiPage
@@ -214,17 +240,37 @@ async def _digest_flat_narrative(
 
     if plan.page_slugs:
         out.append("## Trích đoạn từ các sub-page")
-        rows = (
-            await db.execute(
-                select(WikiPage).where(WikiPage.slug.in_(plan.page_slugs[:30]))
-            )
-        ).scalars().all()
-        for page in rows:
-            snippet = (page.content_md or "")[:1_200]
+        drafts_by_slug = _draft_pages_by_slug(page_drafts or [])
+        rendered_slugs: set[str] = set()
+
+        for slug in plan.page_slugs[:30]:
+            draft = drafts_by_slug.get(slug)
+            if not draft:
+                continue
+            snippet = (draft.get("content_md") or "")[:1_200]
             out.append("")
-            out.append(f"### {page.title}")
+            out.append(f"### {draft.get('title') or slug}")
             out.append("")
             out.append(snippet)
+            rendered_slugs.add(slug)
+
+        missing_slugs = [s for s in plan.page_slugs[:30] if s not in rendered_slugs]
+        if missing_slugs:
+            rows = (
+                await db.execute(
+                    select(WikiPage).where(WikiPage.slug.in_(missing_slugs))
+                )
+            ).scalars().all()
+            rows_by_slug = {page.slug: page for page in rows}
+            for slug in missing_slugs:
+                page = rows_by_slug.get(slug)
+                if not page:
+                    continue
+                snippet = (page.content_md or "")[:1_200]
+                out.append("")
+                out.append(f"### {page.title}")
+                out.append("")
+                out.append(snippet)
 
     return "\n".join(out)
 
@@ -258,7 +304,14 @@ async def run_digest_phase(
     if sections:
         content_md = await _digest_with_outline(source, plan_data, sections, llm, profile)
     else:
-        content_md = await _digest_flat_narrative(source, plan_data, llm, profile, session)
+        page_drafts = []
+        try:
+            page_drafts = list((compilation_plan.plan_json or {}).get("_page_drafts") or [])
+        except Exception:
+            page_drafts = []
+        content_md = await _digest_flat_narrative(
+            source, plan_data, llm, profile, session, page_drafts=page_drafts
+        )
 
     content_md = _strip_unsafe_html(content_md)
     content_md = _validate_wiki_links(content_md, plan_data.page_slugs)

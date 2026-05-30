@@ -28,7 +28,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.ai.local_orchestrator.lms_client import LoadOptions
-from app.ai.local_orchestrator.lms_client_guarded import LMSClientGuarded, _is_oom
+from app.ai.local_orchestrator.lms_client_guarded import (
+    LMSClientGuarded,
+    _is_oom,
+    _is_remote_lms_host,
+)
 from app.ai.local_orchestrator.ram_guard import RAMGuard, RAMInsufficientError
 
 
@@ -152,6 +156,39 @@ class TestPreflightRamCheck:
                     estimated_ram_gb=0.0,
                 )
         assert result == "inst-ok"
+
+    @pytest.mark.asyncio
+    async def test_remote_lms_host_skips_container_ram_preflight(self):
+        """Docker workers cannot use container RAM as host LM Studio headroom."""
+        client = LMSClientGuarded(
+            host="http://192.168.1.6:1234",
+            auth_token="",
+            ram_guard=RAMGuard(headroom_gb=2.0),
+        )
+        with patch("psutil.virtual_memory") as mock_vmem:
+            mock_vmem.return_value.available = int(1 * 1e9)
+            with patch.object(
+                type(client).__bases__[0],
+                "load",
+                new_callable=AsyncMock,
+                return_value="inst-ok",
+            ) as mock_parent_load:
+                result = await client.load(
+                    PRIMARY,
+                    OPTS,
+                    source_id=SOURCE,
+                    phase=PHASE,
+                    estimated_ram_gb=21.0,
+                    fallback_model_id=FALLBACK,
+                )
+
+        assert result == "inst-ok"
+        assert mock_parent_load.call_args[0][0] == PRIMARY
+
+    def test_remote_host_detection(self):
+        assert _is_remote_lms_host("http://192.168.1.6:1234") is True
+        assert _is_remote_lms_host("http://host.docker.internal:1234") is True
+        assert _is_remote_lms_host("http://localhost:1234") is False
 
 
 # ---------------------------------------------------------------------------

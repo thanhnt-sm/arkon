@@ -34,6 +34,82 @@ _PATH_CHAT = "/v1/chat/completions"  # OpenAI-compat for predict
 # How long to wait for the list/health check endpoint (lightweight)
 _HEALTH_TIMEOUT_S = 5.0
 
+_MAP_EXTRACT_SCHEMA: dict = {
+    "type": "object",
+    "properties": {
+        "entities": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "type": {"type": "string"},
+                    "aliases": {"type": "array", "items": {"type": "string"}},
+                    "local_offset": {"type": "integer"},
+                },
+                "required": ["name", "type", "aliases", "local_offset"],
+            },
+        },
+        "concepts": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "term": {"type": "string"},
+                    "definition_excerpt": {"type": "string"},
+                    "local_offset": {"type": "integer"},
+                },
+                "required": ["term", "definition_excerpt", "local_offset"],
+            },
+        },
+        "claims": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "statement": {"type": "string"},
+                    "subject": {"type": "string"},
+                    "local_offset": {"type": "integer"},
+                    "evidence_length": {"type": "integer"},
+                    "confidence": {"type": "string"},
+                },
+                "required": [
+                    "statement",
+                    "subject",
+                    "local_offset",
+                    "evidence_length",
+                    "confidence",
+                ],
+            },
+        },
+        "relations": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "from": {"type": "string"},
+                    "to": {"type": "string"},
+                    "type": {"type": "string"},
+                },
+                "required": ["from", "to", "type"],
+            },
+        },
+        "topics": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["entities", "concepts", "claims", "relations", "topics"],
+}
+
+
+def _chat_message_text(message: dict) -> str:
+    """Return assistant text from LM Studio/OpenAI-compatible message shapes."""
+    content = message.get("content")
+    if content:
+        return str(content)
+    reasoning_content = message.get("reasoning_content")
+    if reasoning_content:
+        return str(reasoning_content)
+    return ""
+
 
 class LMSRestClient:
     """
@@ -94,10 +170,13 @@ class LMSRestClient:
         payload: dict = {
             "model": model_id,
             "context_length": load_options.context_length,
-            "eval_batch_size": load_options.eval_batch_size,
-            "flash_attention": load_options.flash_attention,
-            "offload_kv_cache_to_gpu": load_options.kv_cache_gpu_offload,
         }
+        if load_options.eval_batch_size is not None:
+            payload["eval_batch_size"] = load_options.eval_batch_size
+        if load_options.flash_attention is not None:
+            payload["flash_attention"] = load_options.flash_attention
+        if load_options.kv_cache_gpu_offload is not None:
+            payload["offload_kv_cache_to_gpu"] = load_options.kv_cache_gpu_offload
         if load_options.ttl_seconds is not None:
             payload["ttl"] = load_options.ttl_seconds
 
@@ -197,6 +276,14 @@ class LMSRestClient:
             payload["max_tokens"] = sampling.max_tokens
         if sampling.seed is not None:
             payload["seed"] = sampling.seed
+        if sampling.response_format_json:
+            payload["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "map_extract",
+                    "schema": _MAP_EXTRACT_SCHEMA,
+                },
+            }
 
         logger.debug("REST predict: instance_id=%s", instance_id)
         async with httpx.AsyncClient(
@@ -204,12 +291,20 @@ class LMSRestClient:
             timeout=self._timeout(timeout_s),
         ) as client:
             resp = await client.post(self._url(_PATH_CHAT), json=payload)
-            resp.raise_for_status()
+            try:
+                resp.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                body = resp.text[:1000]
+                raise httpx.HTTPStatusError(
+                    f"{exc}; body={body}",
+                    request=exc.request,
+                    response=exc.response,
+                ) from exc
             data = resp.json()
 
         # Standard OpenAI response: choices[0].message.content
         try:
-            content: str = data["choices"][0]["message"]["content"]
+            content = _chat_message_text(data["choices"][0]["message"])
         except (KeyError, IndexError) as exc:
             raise ValueError(f"Unexpected LM Studio response format: {data!r}") from exc
 

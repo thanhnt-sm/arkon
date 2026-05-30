@@ -7,8 +7,11 @@ They expose the same public interface as the OpenAI/Google providers so that
 callers (mrp/pipeline.py, worker.py) require zero changes.
 
 Heuristic phase routing in LocalOrchestratorLLM.generate():
-  - system contains "JSON" or "EXTRACT" → map_extract
-  - system contains "DIGEST"            → digest_summary
+  - writer/markdown prompts             → refine_write
+  - digest prompts                      → digest_summary
+  - reduce/planning/reconciliation JSON → reduce_plan
+  - verifier prompts                    → verify_check
+  - map extraction prompts              → map_extract
   - default                             → refine_write
   Caller can override by setting ``config.extra["phase"]``.
 """
@@ -59,14 +62,32 @@ class LocalOrchestratorLLM(LLMProvider):
 
         if system:
             upper = system.upper()
-            if "JSON" in upper or "EXTRACT" in upper:
-                return "map_extract"
+            # Writer prompts mention "extracting structured knowledge" as a
+            # quality rule. Route them before the extraction/JSON checks so
+            # markdown wiki pages are not forced through MAP JSON schema mode.
+            if (
+                "WIKI WRITER" in upper
+                or "WRITE THE COMPLETE WIKI PAGE" in upper
+                or "RETURN ONLY THE MARKDOWN" in upper
+                or ("MARKDOWN" in upper and "WIKI PAGE" in upper)
+            ):
+                return "refine_write"
             if "DIGEST" in upper:
                 return "digest_summary"
-            if "REDUCE" in upper or "PLAN" in upper:
-                return "reduce_plan"
-            if "VERIFY" in upper or "AUDIT" in upper:
+            if "VERIFY" in upper or "AUDIT" in upper or "FACT-CHECKING" in upper:
                 return "verify_check"
+            if (
+                "REDUCE" in upper
+                or "PLAN" in upper
+                or "COMPILATION PLAN" in upper
+                or "NAMED-ENTITY RESOLUTION" in upper
+                or "KNOWLEDGE BASE ASSISTANT" in upper
+            ):
+                return "reduce_plan"
+            if "PLAIN TEXT" in upper and "NO JSON" in upper:
+                return "refine_write"
+            if "JSON" in upper or "EXTRACT" in upper:
+                return "map_extract"
 
         return "refine_write"
 

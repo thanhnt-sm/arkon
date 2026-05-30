@@ -41,6 +41,7 @@ from __future__ import annotations
 import logging
 import re
 from typing import Optional
+from urllib.parse import urlparse
 
 from app.ai.local_orchestrator.lms_client import LMSClient, LoadOptions
 from app.ai.local_orchestrator.ram_guard import RAMGuard, RAMInsufficientError
@@ -56,6 +57,18 @@ _OOM_PATTERN = re.compile(
     r"(out of memory|oom|allocation failed|insufficient memory|metal.*memory|mps.*out)",
     re.IGNORECASE | re.DOTALL,
 )
+
+_LOCAL_LMS_HOSTS = {"", "localhost", "127.0.0.1", "::1", "0.0.0.0"}
+
+
+def _is_remote_lms_host(host: str) -> bool:
+    """Return True when RAM must be judged by LM Studio, not this process."""
+    value = host.strip()
+    if "://" in value:
+        hostname = urlparse(value).hostname or ""
+    else:
+        hostname = value.split("/", 1)[0].rsplit(":", 1)[0]
+    return hostname.lower() not in _LOCAL_LMS_HOSTS
 
 
 def _is_oom(exc: BaseException) -> bool:
@@ -87,6 +100,7 @@ class LMSClientGuarded(LMSClient):
     ) -> None:
         super().__init__(host=host, auth_token=auth_token, default_timeout_s=default_timeout_s)
         self._ram_guard: RAMGuard = ram_guard if ram_guard is not None else RAMGuard(headroom_gb=2.0)
+        self._skip_ram_preflight = _is_remote_lms_host(host)
 
         # Keyed by (source_id, phase) — counts consecutive OOM failures.
         self._oom_counter: dict[tuple[str, str], int] = {}
@@ -171,7 +185,12 @@ class LMSClientGuarded(LMSClient):
         # ----------------------------------------------------------------
         # Step 1: RAM pre-flight
         # ----------------------------------------------------------------
-        if estimated_ram_gb > 0:
+        if estimated_ram_gb > 0 and self._skip_ram_preflight:
+            logger.debug(
+                "LMSClientGuarded: skipping RAM pre-flight for remote LM Studio host=%s",
+                self._host,
+            )
+        elif estimated_ram_gb > 0:
             try:
                 self._ram_guard.assert_can_load(estimated_ram_gb)
             except RAMInsufficientError as ram_err:

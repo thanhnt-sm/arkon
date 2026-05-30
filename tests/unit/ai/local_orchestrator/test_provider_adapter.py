@@ -133,6 +133,80 @@ async def test_llm_generate_no_system_defaults_refine_write():
 
 
 @pytest.mark.asyncio
+async def test_llm_generate_writer_prompt_with_extract_keyword_routes_refine_write():
+    router = _make_router_mock()
+    llm = LocalOrchestratorLLM(_llm_provider_config(), router)
+
+    await llm.generate(
+        "page spec",
+        system=(
+            "You are an enterprise knowledge wiki writer. "
+            "You are extracting structured knowledge. "
+            "Return ONLY the markdown content."
+        ),
+    )
+
+    call_args = router.run_phase.call_args
+    assert call_args[0][0] == "refine_write"
+
+
+@pytest.mark.asyncio
+async def test_llm_generate_compilation_plan_json_routes_reduce_plan():
+    router = _make_router_mock()
+    llm = LocalOrchestratorLLM(_llm_provider_config(), router)
+
+    await llm.generate(
+        "plan prompt",
+        system="Given extracted knowledge, produce a compilation plan. Return ONLY valid JSON.",
+    )
+
+    call_args = router.run_phase.call_args
+    assert call_args[0][0] == "reduce_plan"
+
+
+@pytest.mark.asyncio
+async def test_llm_generate_reducer_helper_json_routes_reduce_plan():
+    router = _make_router_mock()
+    llm = LocalOrchestratorLLM(_llm_provider_config(), router)
+
+    await llm.generate(
+        "merge candidates",
+        system="You are a named-entity resolution assistant. Return only JSON.",
+    )
+
+    call_args = router.run_phase.call_args
+    assert call_args[0][0] == "reduce_plan"
+
+
+@pytest.mark.asyncio
+async def test_llm_generate_fact_check_json_routes_verify_check():
+    router = _make_router_mock()
+    llm = LocalOrchestratorLLM(_llm_provider_config(), router)
+
+    await llm.generate(
+        "verify claims",
+        system="You are a fact-checking assistant. Return only JSON.",
+    )
+
+    call_args = router.run_phase.call_args
+    assert call_args[0][0] == "verify_check"
+
+
+@pytest.mark.asyncio
+async def test_llm_generate_plain_text_no_json_routes_refine_write():
+    router = _make_router_mock()
+    llm = LocalOrchestratorLLM(_llm_provider_config(), router)
+
+    await llm.generate(
+        "distill this extracted JSON",
+        system="You compress context. Output PLAIN TEXT only — no JSON, no markdown headers.",
+    )
+
+    call_args = router.run_phase.call_args
+    assert call_args[0][0] == "refine_write"
+
+
+@pytest.mark.asyncio
 async def test_llm_generate_explicit_phase_override():
     router = _make_router_mock()
     llm = LocalOrchestratorLLM(

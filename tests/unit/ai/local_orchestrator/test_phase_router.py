@@ -257,15 +257,11 @@ async def test_other_mode_minimal_load_options():
 
     call_args = lms.load.call_args
     load_opts: LoadOptions = call_args[0][1]
-    # OTHER mode: only context_length set; GPU/flash defaults from LoadOptions schema
+    # OTHER mode: only context_length set; advanced load hints are omitted.
     assert load_opts.context_length == 32768
-    # GPU ratio should be default (1.0) from LoadOptions schema — not from config
-    # The key is that we DON'T copy config.main_llm.gpu_ratio for "other" mode
-    # Instead LoadOptions uses its own default (1.0)
-    default_opts = LoadOptions()
-    assert load_opts.gpu_ratio == default_opts.gpu_ratio
-    assert load_opts.flash_attention == default_opts.flash_attention
-    assert load_opts.eval_batch_size == default_opts.eval_batch_size
+    assert load_opts.gpu_ratio is None
+    assert load_opts.flash_attention is None
+    assert load_opts.eval_batch_size is None
 
 
 # ---------------------------------------------------------------------------
@@ -315,6 +311,7 @@ async def test_run_phase_main_llm_with_messages():
     lms.predict.assert_called_once()
     call_args = lms.predict.call_args
     assert call_args[0][1] == messages
+    assert call_args[0][2].response_format_json is True
 
 
 # ---------------------------------------------------------------------------
@@ -395,6 +392,7 @@ async def test_get_router_reset_router_singleton():
     fake_config = _make_config("other")
     fake_lms = _make_lms_mock()
     fake_emb = _make_embedding_mock()
+    lms_client_cls = MagicMock(return_value=fake_lms)
 
     with (
         patch(
@@ -403,7 +401,7 @@ async def test_get_router_reset_router_singleton():
         ),
         patch(
             "app.ai.local_orchestrator.phase_router.LMSClientGuarded",
-            return_value=fake_lms,
+            lms_client_cls,
         ),
         patch(
             "app.ai.local_orchestrator.phase_router.EmbeddingService",
@@ -415,6 +413,7 @@ async def test_get_router_reset_router_singleton():
         router2 = await get_router(mock_session)
         # Same singleton
         assert router1 is router2
+        assert lms_client_cls.call_args.kwargs["default_timeout_s"] == 300.0
 
         await reset_router()
 

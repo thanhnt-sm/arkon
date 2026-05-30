@@ -7,7 +7,7 @@
  * LM Studio connection, and trigger preset resets + connection tests.
  */
 
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth";
 import { api } from "@/lib/api";
@@ -35,6 +35,13 @@ type SamplingProfileData = {
   repeat_penalty: number | null;
 };
 
+type SettingsModelData = {
+  llm_model_id?: string | null;
+  vision_model_id?: string | null;
+  embedding_model_id?: string | null;
+  lms_host?: string | null;
+};
+
 type LocalAIConfigData = {
   mode: LocalAIMode;
   lms_host: string;
@@ -51,6 +58,17 @@ type LocalAIConfigData = {
     digest: SamplingProfileData;
     vision: SamplingProfileData;
   };
+  settings_models?: SettingsModelData;
+};
+
+type LocalAIConfigSaveBody = {
+  mode: LocalAIMode;
+  lms_host: string;
+  lms_auth_token?: string;
+  ram_headroom_gb: number;
+  vision: VisionPhaseConfig;
+  main_llm: MainLLMPhaseConfig;
+  embedding: EmbeddingPhaseConfig;
 };
 
 type HealthResult = {
@@ -102,6 +120,82 @@ function FieldRow({ label, hint, children }: { label: string; hint?: string; chi
   );
 }
 
+const PHASE_LABELS: Record<PhaseKey, string> = {
+  vision: "Vision phase",
+  main_llm: "Main LLM phase",
+  embedding: "Embedding phase",
+};
+
+type ModelPhaseConfig = AnyPhaseConfig & {
+  model_id: string;
+  fallback_model_id: string;
+  estimated_ram_gb: number;
+};
+
+function normalizeModelPhase<T extends ModelPhaseConfig>(phase: T): T {
+  return {
+    ...phase,
+    model_id: phase.model_id.trim(),
+    fallback_model_id: phase.fallback_model_id.trim(),
+  };
+}
+
+function getSaveValidationError(config: LocalAIConfigData): string | null {
+  if (!config.lms_host.trim()) {
+    return "Host URL cannot be blank.";
+  }
+  if (!Number.isFinite(config.ram_headroom_gb) || config.ram_headroom_gb < 0) {
+    return "RAM headroom must be 0 or greater.";
+  }
+
+  const phases: Array<[PhaseKey, ModelPhaseConfig]> = [
+    ["vision", config.vision],
+    ["main_llm", config.main_llm],
+    ["embedding", config.embedding],
+  ];
+
+  for (const [phaseKey, phase] of phases) {
+    const label = PHASE_LABELS[phaseKey];
+    if (!phase.model_id.trim()) return `${label} model ID cannot be blank.`;
+    if (!phase.fallback_model_id.trim()) return `${label} fallback model ID cannot be blank.`;
+    if (!Number.isFinite(phase.estimated_ram_gb) || phase.estimated_ram_gb <= 0) {
+      return `${label} estimated RAM must be greater than 0.`;
+    }
+  }
+
+  const runtimePhases: Array<[PhaseKey, VisionPhaseConfig | MainLLMPhaseConfig]> = [
+    ["vision", config.vision],
+    ["main_llm", config.main_llm],
+  ];
+
+  for (const [phaseKey, phase] of runtimePhases) {
+    const label = PHASE_LABELS[phaseKey];
+    if (!Number.isFinite(phase.context_length) || phase.context_length <= 0) {
+      return `${label} context length must be greater than 0.`;
+    }
+    if (!Number.isFinite(phase.eval_batch_size) || phase.eval_batch_size <= 0) {
+      return `${label} eval batch size must be greater than 0.`;
+    }
+    if (!Number.isFinite(phase.gpu_ratio) || phase.gpu_ratio < 0 || phase.gpu_ratio > 1) {
+      return `${label} GPU ratio must be between 0 and 1.`;
+    }
+  }
+
+  return null;
+}
+
+function buildSaveBody(config: LocalAIConfigData, tokenToSend: string | undefined): LocalAIConfigSaveBody {
+  return {
+    mode: config.mode,
+    lms_host: config.lms_host.trim(),
+    ...(tokenToSend !== undefined ? { lms_auth_token: tokenToSend } : {}),
+    ram_headroom_gb: config.ram_headroom_gb,
+    vision: normalizeModelPhase(config.vision),
+    main_llm: normalizeModelPhase(config.main_llm),
+    embedding: normalizeModelPhase(config.embedding),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Page
 // ---------------------------------------------------------------------------
@@ -114,6 +208,7 @@ export default function LocalAIAdminPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
+  const [syncing, setSyncing] = useState(false);
   const [resetting, setResetting] = useState(false);
   const [statusChip, setStatusChip] = useState<StatusChip | null>(null);
   const [healthResult, setHealthResult] = useState<HealthResult | null>(null);
@@ -126,30 +221,40 @@ export default function LocalAIAdminPage() {
     }
   }, [user, router]);
 
-  const loadConfig = useCallback(async () => {
-    setLoading(true);
-    setStatusChip(null);
-    try {
-      const data = await api<LocalAIConfigData>("/api/admin/local-ai/config");
-      setConfig(data);
-    } catch (e) {
-      setStatusChip({
-        kind: "error",
-        message: e instanceof Error ? e.message : "Failed to load config",
-      });
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
   useEffect(() => {
-    if (user?.role === "admin") loadConfig();
-  }, [user, loadConfig]);
+    if (user?.role !== "admin") return;
+
+    let cancelled = false;
+    api<LocalAIConfigData>("/api/admin/local-ai/config")
+      .then((data) => {
+        if (!cancelled) setConfig(data);
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        setStatusChip({
+          kind: "error",
+          message: e instanceof Error ? e.message : "Failed to load config",
+        });
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.role]);
 
   // ── Mutations ──────────────────────────────────────────────────────────
 
   const handleSave = async () => {
     if (!config) return;
+    const validationError = getSaveValidationError(config);
+    if (validationError) {
+      setStatusChip({ kind: "error", message: validationError });
+      return;
+    }
+
     setSaving(true);
     setStatusChip(null);
     try {
@@ -161,18 +266,10 @@ export default function LocalAIAdminPage() {
 
       const updated = await api<LocalAIConfigData>("/api/admin/local-ai/config", {
         method: "POST",
-        body: {
-          mode: config.mode,
-          lms_host: config.lms_host,
-          ...(tokenToSend !== undefined ? { lms_auth_token: tokenToSend } : {}),
-          ram_headroom_gb: config.ram_headroom_gb,
-          vision: config.vision,
-          main_llm: config.main_llm,
-          embedding: config.embedding,
-        },
+        body: buildSaveBody(config, tokenToSend),
       });
       setConfig(updated);
-      setStatusChip({ kind: "success", message: "Configuration saved." });
+      setStatusChip({ kind: "success", message: "Configuration saved. New jobs use it on their next Local AI call." });
     } catch (e) {
       setStatusChip({
         kind: "error",
@@ -203,6 +300,25 @@ export default function LocalAIAdminPage() {
       });
     } finally {
       setTesting(false);
+    }
+  };
+
+  const handleSyncSettings = async () => {
+    setSyncing(true);
+    setStatusChip(null);
+    try {
+      const updated = await api<LocalAIConfigData>("/api/admin/local-ai/sync-settings", {
+        method: "POST",
+      });
+      setConfig(updated);
+      setStatusChip({ kind: "success", message: "Local AI now uses the models selected in Settings." });
+    } catch (e) {
+      setStatusChip({
+        kind: "error",
+        message: e instanceof Error ? e.message : "Sync from Settings failed",
+      });
+    } finally {
+      setSyncing(false);
     }
   };
 
@@ -259,7 +375,16 @@ export default function LocalAIAdminPage() {
   // ── Render ─────────────────────────────────────────────────────────────
 
   const showAdvanced = config?.mode === "max";
-  const busy = saving || resetting;
+  const busy = saving || resetting || syncing;
+  const settingsModels = config?.settings_models;
+  const settingsDiffers = Boolean(
+    config &&
+      settingsModels &&
+      ((settingsModels.lms_host && settingsModels.lms_host !== config.lms_host) ||
+        (settingsModels.llm_model_id && settingsModels.llm_model_id !== config.main_llm.model_id) ||
+        (settingsModels.vision_model_id && settingsModels.vision_model_id !== config.vision.model_id) ||
+        (settingsModels.embedding_model_id && settingsModels.embedding_model_id !== config.embedding.model_id)),
+  );
 
   return (
     <>
@@ -280,6 +405,20 @@ export default function LocalAIAdminPage() {
                 {testing ? "progress_activity" : "health_and_safety"}
               </span>
               {testing ? "Testing…" : "Test Connection"}
+            </Button>
+
+            <Button
+              variant={settingsDiffers ? "default" : "outline"}
+              onClick={handleSyncSettings}
+              disabled={busy || loading || !config}
+            >
+              <span
+                className={`material-symbols-outlined text-base mr-2 ${syncing ? "animate-spin" : ""}`}
+                style={{ fontVariationSettings: "'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 20" }}
+              >
+                {syncing ? "progress_activity" : "sync_alt"}
+              </span>
+              {syncing ? "Applying…" : "Use Settings Models"}
             </Button>
 
             <Button
@@ -360,6 +499,11 @@ export default function LocalAIAdminPage() {
               Mode
             </div>
             <ModeSelector value={config.mode} onChange={setMode} disabled={busy} />
+            {settingsDiffers && (
+              <p className="mt-2 text-xs text-amber-700">
+                Settings currently points to different model IDs. Use Settings Models to copy them here.
+              </p>
+            )}
           </section>
 
           {/* LM Studio connection */}
@@ -394,6 +538,7 @@ export default function LocalAIAdminPage() {
                   type="number"
                   value={config.ram_headroom_gb}
                   step={0.5}
+                  min={0}
                   onChange={(e) => {
                     const n = parseFloat(e.target.value);
                     if (!Number.isNaN(n)) setTopField("ram_headroom_gb", n);
@@ -411,6 +556,18 @@ export default function LocalAIAdminPage() {
                 {healthResult.loaded_models.map((m) => (
                   <span key={m} className="font-mono bg-muted rounded px-1 mr-1">{m}</span>
                 ))}
+              </div>
+            )}
+
+            {settingsModels && (
+              <div className="rounded-md border bg-muted/30 px-3 py-2 text-[12px] text-muted-foreground">
+                <div className="font-semibold text-foreground">Settings selection</div>
+                <div className="mt-1 grid grid-cols-1 gap-1 font-mono">
+                  {settingsModels.lms_host && <span>LMS: {settingsModels.lms_host}</span>}
+                  {settingsModels.llm_model_id && <span>LLM: {settingsModels.llm_model_id}</span>}
+                  {settingsModels.vision_model_id && <span>Vision: {settingsModels.vision_model_id}</span>}
+                  {settingsModels.embedding_model_id && <span>Embedding: {settingsModels.embedding_model_id}</span>}
+                </div>
               </div>
             )}
           </section>

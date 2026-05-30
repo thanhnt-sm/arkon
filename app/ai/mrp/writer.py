@@ -85,7 +85,9 @@ class WriterBatchIncomplete(Exception):
         )
 WRITER_COMPLEX_THRESHOLD_EXISTING_CHARS = 3_000
 WRITER_AGENT_MAX_STEPS = 10
-WRITER_AGENT_TIMEOUT = 300  # seconds per LLM call in complex writer
+WRITER_AGENT_TIMEOUT = _safe_int_env(
+    "MRP_WRITER_AGENT_TIMEOUT", 600, minimum=60
+)  # seconds per LLM call; local markdown generation can be slow
 
 # ---------------------------------------------------------------------------
 # Dataclass
@@ -279,6 +281,13 @@ def _get_source_context_budget(llm: Optional[LLMProvider]) -> int:
     """
     if llm is None:
         return SOURCE_CONTEXT_FALLBACK_CHARS
+
+    profile = getattr(llm, "runtime_profile", None)
+    ctx_tokens = getattr(profile, "context_length", None)
+    if ctx_tokens:
+        ratio = 0.25 if getattr(profile, "is_local", False) else _SOURCE_BUDGET_RATIO
+        budget_chars = int(ctx_tokens * _CHARS_PER_TOKEN * ratio)
+        return min(budget_chars, _MAX_BUDGET_CHARS)
 
     spec = getattr(llm.config, "spec", None)
     ctx_tokens = getattr(spec, "context_window_tokens", None) if spec else None
@@ -918,6 +927,7 @@ async def _run_refine_sequential(
     results: list[PageWriteResult] = []
     total = len(pages_spec)
     tripped = False
+    stub_count = 0
     for idx, spec in enumerate(pages_spec, start=1):
         result = await write_one(spec)
         if result is None:
@@ -926,6 +936,7 @@ async def _run_refine_sequential(
         await _commit_draft(session, plan, result)
 
         if is_stub_content(result.content_md):
+            stub_count += 1
             pacer.report_outcome(False)
             if breaker.trip():
                 logger.warning(
@@ -945,6 +956,16 @@ async def _run_refine_sequential(
 
     if tripped:
         raise WriterBatchIncomplete(drafted=len(results), expected=total)
+    if stub_count:
+        logger.warning(
+            f"MRP REFINE: {stub_count} stub draft(s) persisted — aborting before "
+            "VERIFY/COMMIT so retry can regenerate them"
+        )
+        raise WriterBatchIncomplete(
+            drafted=len(results) - stub_count,
+            expected=total,
+            reason="stub_drafts",
+        )
     return results
 
 
@@ -991,6 +1012,17 @@ async def _run_refine_parallel(
     results = [r for r in raw if r is not None]
     if cancel_event.is_set():
         raise WriterBatchIncomplete(drafted=len(results), expected=len(pages_spec))
+    stub_count = sum(1 for r in results if is_stub_content(r.content_md))
+    if stub_count:
+        logger.warning(
+            f"MRP REFINE: {stub_count} stub draft(s) persisted in parallel mode — "
+            "aborting before VERIFY/COMMIT so retry can regenerate them"
+        )
+        raise WriterBatchIncomplete(
+            drafted=len(results) - stub_count,
+            expected=len(pages_spec),
+            reason="stub_drafts",
+        )
     return results
 
 
@@ -1107,7 +1139,8 @@ async def run_refine_phase(
                     existing_content = existing_page.content_md
 
             # Choose writer mode
-            is_complex = (
+            supports_tools = type(llm).generate_with_tools is not LLMProvider.generate_with_tools
+            is_complex = supports_tools and (
                 len(evidence) > WRITER_COMPLEX_THRESHOLD_EVIDENCE
                 or len(existing_content or "") > WRITER_COMPLEX_THRESHOLD_EXISTING_CHARS
             )

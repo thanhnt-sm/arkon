@@ -123,6 +123,9 @@ async def test_max_mode_get_llm_returns_local_orchestrator():
         provider = await registry.get_llm()
 
     assert isinstance(provider, LocalOrchestratorLLM)
+    assert provider.runtime_profile.is_local
+    assert provider.runtime_profile.context_length == cfg.main_llm.context_length
+    assert provider.runtime_profile.model_name == cfg.main_llm.model_id
 
 
 @pytest.mark.asyncio

@@ -18,7 +18,7 @@ from arq import cron
 from arq import func as arq_func
 from arq.connections import ArqRedis, RedisSettings, create_pool
 from loguru import logger
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from app.config import settings
 from app.utils.caption_sanitize import sanitize_caption as _sanitize_caption
@@ -146,6 +146,13 @@ async def ingest_file_task(ctx: dict, source_id: str):
             # Captioning is offloaded to caption_images_task (enqueued below) so
             # this job is not blocked by the number of images in the document.
             await tracker.update(30, "Extracting images...")
+            await session.execute(delete(SourceImage).where(SourceImage.source_id == sid))
+            await session.flush()
+            try:
+                storage_service.delete_prefix(f"sources/{source_id}/images/")
+            except Exception as exc:
+                logger.warning(f"Could not clear stale images for {source_id}: {exc}")
+
             images = extract_images(file_data, file_name, source_id)
 
             # Persist images so wiki content_md can reference them by uuid.
@@ -860,7 +867,7 @@ async def regenerate_plan_task(ctx: dict, source_id: str, user_note: str):
     """
     if await _check_intake_paused(ctx, "regenerate_plan_task", source_id):
         return
-    from app.ai.mrp.reducer import reconcile_with_kb, run_planning_call
+    from app.ai.mrp.reducer import _build_fallback_pages, reconcile_with_kb, run_planning_call
     from app.ai.registry import ProviderRegistry
     from app.database import async_session_factory
     from app.database.models import Source, SourceCompilationPlan
@@ -922,6 +929,22 @@ async def regenerate_plan_task(ctx: dict, source_id: str, user_note: str):
                 kt_desc=kt_desc,
                 user_note=user_note,
             )
+            if not new_plan_dict.get("pages"):
+                claims = plan_json.get("_claims", [])
+                fallback_pages = _build_fallback_pages(
+                    source=source,
+                    strategy=strategy,
+                    canonical_entities=canonical_entities,
+                    canonical_concepts=canonical_concepts,
+                    raw_claims=claims,
+                )
+                new_plan_dict["pages"] = fallback_pages
+                new_plan_dict["source_page_slug"] = fallback_pages[0]["slug"] if fallback_pages else ""
+                new_plan_dict["estimated_page_count"] = len(fallback_pages)
+                new_plan_dict["compilation_notes"] = (
+                    (new_plan_dict.get("compilation_notes") or "").strip()
+                    + "\nFallback page plan generated because REDUCE returned no pages."
+                ).strip()
 
             internal_keys = {
                 k: plan_json[k] for k in ("_claims", "_entities", "_concepts") if k in plan_json

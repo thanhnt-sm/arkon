@@ -110,11 +110,15 @@ function NumberInput({
   value,
   onChange,
   step,
+  min,
+  max,
   disabled,
 }: {
   value: number;
   onChange: (v: number) => void;
   step?: number;
+  min?: number;
+  max?: number;
   disabled?: boolean;
 }) {
   return (
@@ -122,6 +126,8 @@ function NumberInput({
       type="number"
       value={value}
       step={step ?? 1}
+      min={min}
+      max={max}
       onChange={(e) => {
         const n = parseFloat(e.target.value);
         if (!Number.isNaN(n)) onChange(n);
@@ -177,7 +183,6 @@ export function PhaseConfigSection({
 
   const isEmbedding = phaseKey === "embedding";
   const isMainLLM = phaseKey === "main_llm";
-  const isVision = phaseKey === "vision";
 
   // Type assertions — safe because phaseKey determines which fields exist
   const visionOrMain = config as VisionPhaseConfig;
@@ -217,6 +222,7 @@ export function PhaseConfigSection({
             value={config.estimated_ram_gb}
             onChange={(v) => set("estimated_ram_gb", v)}
             step={0.5}
+            min={0.1}
             disabled={disabled}
           />
         </FieldRow>
@@ -226,6 +232,7 @@ export function PhaseConfigSection({
             <NumberInput
               value={visionOrMain.context_length}
               onChange={(v) => set("context_length", v)}
+              min={1}
               disabled={disabled}
             />
           </FieldRow>
@@ -265,6 +272,7 @@ export function PhaseConfigSection({
                   <NumberInput
                     value={visionOrMain.eval_batch_size}
                     onChange={(v) => set("eval_batch_size", v)}
+                    min={1}
                     disabled={disabled}
                   />
                 </FieldRow>
@@ -274,6 +282,8 @@ export function PhaseConfigSection({
                     value={visionOrMain.gpu_ratio}
                     onChange={(v) => set("gpu_ratio", v)}
                     step={0.05}
+                    min={0}
+                    max={1}
                     disabled={disabled}
                   />
                 </FieldRow>

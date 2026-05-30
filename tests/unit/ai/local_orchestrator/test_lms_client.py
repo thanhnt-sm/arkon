@@ -13,6 +13,8 @@ Test coverage:
   6. BusyError cleared after predict completes (unload succeeds)
   7. lmstudio ImportError → falls back to REST (mode == "rest")
   8. Concurrent predict() calls — inflight reaches 2, then drops to 0
+  9. load() reuses an already-loaded SDK model instead of loading a duplicate
+  10. HTTP host URLs are normalized for the lmstudio SDK api_host parameter
 """
 
 from __future__ import annotations
@@ -50,7 +52,7 @@ def _make_sdk_stub() -> types.ModuleType:
 
     # Fake client object
     fake_client = MagicMock()
-    fake_client.llm.load = MagicMock(return_value=fake_loaded)
+    fake_client.llm.load_new_instance = MagicMock(return_value=fake_loaded)
     fake_client.llm.unload = MagicMock()
     fake_client.llm.list_loaded = MagicMock(return_value=[fake_loaded])
     fake_client.llm.model = MagicMock(return_value=fake_model_handle)
@@ -130,8 +132,8 @@ async def test_load_happy_path(sdk_stub: types.ModuleType) -> None:
     opts = LoadOptions(context_length=8192)
     instance_id = await client.load("test/model", opts)
 
-    assert instance_id == "stub-model-id"
-    sdk_stub._fake_client.llm.load.assert_called_once()
+    assert instance_id == "test/model"
+    sdk_stub._fake_client.llm.load_new_instance.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -154,13 +156,13 @@ async def test_load_retries_on_timeout(sdk_stub: types.ModuleType) -> None:
         fake.instance_id = "retry-success-id"
         return fake
 
-    sdk_stub._fake_client.llm.load.side_effect = _flaky_load
+    sdk_stub._fake_client.llm.load_new_instance.side_effect = _flaky_load
 
     client = LMSClient(host="http://localhost:1234")
     opts = LoadOptions()
     instance_id = await client.load("test/model", opts)
 
-    assert instance_id == "retry-success-id"
+    assert instance_id == "test/model"
     assert call_count == 3
 
 
@@ -173,7 +175,7 @@ async def test_load_exhausts_retries(sdk_stub: types.ModuleType) -> None:
     """load() raises TimeoutError after 3 consecutive failures."""
     LMSClient, LoadOptions, SamplingParams, BusyError = _make_client()
 
-    sdk_stub._fake_client.llm.load.side_effect = TimeoutError("always fails")
+    sdk_stub._fake_client.llm.load_new_instance.side_effect = TimeoutError("always fails")
 
     client = LMSClient(host="http://localhost:1234")
     opts = LoadOptions()
@@ -182,7 +184,7 @@ async def test_load_exhausts_retries(sdk_stub: types.ModuleType) -> None:
         await client.load("test/model", opts)
 
     # tenacity makes exactly 3 attempts
-    assert sdk_stub._fake_client.llm.load.call_count == 3
+    assert sdk_stub._fake_client.llm.load_new_instance.call_count == 3
 
 
 # ---------------------------------------------------------------------------
@@ -218,15 +220,11 @@ async def test_predict_inflight_increment_decrement(sdk_stub: types.ModuleType) 
     client = LMSClient(host="http://localhost:1234")
     observed_mid_call: list[int] = []
 
-    original_respond = sdk_stub._fake_model_handle.respond
-
-    def _respond_and_observe(*args, **kwargs):
-        # Read inflight counter from the client — we're inside to_thread so
-        # asyncio state is visible (single-threaded for testing)
+    async def _predict_and_observe(*args, **kwargs):
         observed_mid_call.append(client._inflight.get("model-a", 0))
         return "response text"
 
-    sdk_stub._fake_model_handle.respond.side_effect = _respond_and_observe
+    client._rest.predict = AsyncMock(side_effect=_predict_and_observe)
 
     params = SamplingParams(temperature=0.7)
     result = await client.predict("model-a", [{"role": "user", "content": "hi"}], params)
@@ -248,6 +246,7 @@ async def test_unload_succeeds_after_predict_completes(sdk_stub: types.ModuleTyp
     LMSClient, LoadOptions, SamplingParams, BusyError = _make_client()
 
     client = LMSClient(host="http://localhost:1234")
+    client._rest.predict = AsyncMock(return_value="ok")
 
     params = SamplingParams()
     await client.predict("model-b", [{"role": "user", "content": "test"}], params)
@@ -289,18 +288,16 @@ async def test_concurrent_predict_inflight_tracking(sdk_stub: types.ModuleType) 
 
     client = LMSClient(host="http://localhost:1234")
     peak_inflight: list[int] = []
-    barrier = asyncio.Event()
 
     call_count = 0
 
-    def _slow_respond(*args, **kwargs):
+    async def _slow_predict(*args, **kwargs):
         nonlocal call_count
         call_count += 1
-        # Record inflight at the moment of SDK call (inside to_thread)
         peak_inflight.append(client._inflight.get("model-c", 0))
         return "ok"
 
-    sdk_stub._fake_model_handle.respond.side_effect = _slow_respond
+    client._rest.predict = AsyncMock(side_effect=_slow_predict)
 
     params = SamplingParams()
 
@@ -317,3 +314,38 @@ async def test_concurrent_predict_inflight_tracking(sdk_stub: types.ModuleType) 
     assert call_count == 2
     # At least one call observed inflight >= 1 (both ran, possibly serialised by to_thread)
     assert all(v >= 1 for v in peak_inflight)
+
+
+# ---------------------------------------------------------------------------
+# Test 9 — already loaded SDK model is reused
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_load_reuses_already_loaded_model(sdk_stub: types.ModuleType) -> None:
+    """load() skips load_new_instance when LM Studio already has the model."""
+    LMSClient, LoadOptions, SamplingParams, BusyError = _make_client()
+
+    sdk_stub._fake_loaded.identifier = "test/model"
+    sdk_stub._fake_client.llm.list_loaded.return_value = [sdk_stub._fake_loaded]
+
+    client = LMSClient(host="http://localhost:1234")
+    instance_id = await client.load("test/model", LoadOptions(context_length=8192))
+
+    assert instance_id == "test/model"
+    sdk_stub._fake_client.llm.load_new_instance.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Test 10 — SDK host normalization
+# ---------------------------------------------------------------------------
+
+def test_sdk_api_host_strips_http_scheme_and_path(sdk_stub: types.ModuleType) -> None:
+    """lmstudio SDK expects host:port, not http://host:port/v1."""
+    if "app.ai.local_orchestrator.lms_client" in sys.modules:
+        del sys.modules["app.ai.local_orchestrator.lms_client"]
+
+    from app.ai.local_orchestrator.lms_client import _sdk_api_host
+
+    assert _sdk_api_host("http://192.168.1.6:1234") == "192.168.1.6:1234"
+    assert _sdk_api_host("http://192.168.1.6:1234/v1") == "192.168.1.6:1234"
+    assert _sdk_api_host("192.168.1.6:1234") == "192.168.1.6:1234"

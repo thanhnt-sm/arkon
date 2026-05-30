@@ -388,6 +388,7 @@ class PhaseRouter:
             top_k=profile.top_k,
             min_p=profile.min_p,
             repeat_penalty=profile.repeat_penalty,
+            response_format_json=(phase == "map_extract"),
         )
 
     async def _run_vision(
@@ -454,6 +455,11 @@ _router_singleton: Optional[PhaseRouter] = None
 _singleton_lock: asyncio.Lock = asyncio.Lock()
 
 
+def _config_signature(config: "LocalAIConfig") -> tuple:
+    """Stable signature for deciding whether the router must be rebuilt."""
+    return tuple(sorted(config.model_dump(mode="json").items()))
+
+
 async def get_router(session: "AsyncSession") -> PhaseRouter:
     """Return the process-wide PhaseRouter singleton.
 
@@ -465,18 +471,30 @@ async def get_router(session: "AsyncSession") -> PhaseRouter:
     """
     global _router_singleton
 
-    if _router_singleton is not None:
+    config = await load_config(session)
+
+    if (
+        _router_singleton is not None
+        and _config_signature(_router_singleton._config) == _config_signature(config)
+    ):
         return _router_singleton
 
     async with _singleton_lock:
         # Double-checked locking — another coroutine may have built it.
-        if _router_singleton is not None:
+        if (
+            _router_singleton is not None
+            and _config_signature(_router_singleton._config) == _config_signature(config)
+        ):
             return _router_singleton
 
-        config = await load_config(session)
+        if _router_singleton is not None:
+            await _router_singleton.shutdown()
+            _router_singleton = None
+
         lms_client = LMSClientGuarded(
             host=config.lms_host,
             auth_token=config.lms_auth_token,
+            default_timeout_s=300.0,
             ram_guard=RAMGuard(headroom_gb=config.ram_headroom_gb),
         )
         embedding_service = EmbeddingService(model_id=config.embedding.model_id)

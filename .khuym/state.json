@@ -1,0 +1,30 @@
+{
+  "schema_version": "1.1",
+  "feature_slug": "local-ai-save-guardrails",
+  "mode": "small_change",
+  "active_skill": "reviewing",
+  "phase": "completed",
+  "phase_number": 0,
+  "epic_id": "",
+  "approved_gates": {
+    "context": false,
+    "work_shape": false,
+    "phase_plan": false,
+    "execution": false,
+    "review": false
+  },
+  "active_beads": [],
+  "active_workers": [],
+  "blockers": [],
+  "focus": "/admin/local-ai Save model persistence",
+  "summary": "Small-change fix completed: Local AI Save now trims and validates manual model IDs, rejects blank/default-prone payloads and invalid numeric ranges, and keeps manual saves separate from Settings sync.",
+  "next_action": "No handoff required. Optional: verify the live /admin/local-ai page after restarting/reloading services.",
+  "deferred_beads": [],
+  "last_compounding_run": {
+    "feature": "",
+    "date": "",
+    "learnings_file": "",
+    "critical_promotions": 0
+  },
+  "last_updated": "2026-05-26T00:22:27.277Z"
+}

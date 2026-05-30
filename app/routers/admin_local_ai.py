@@ -13,26 +13,16 @@ from __future__ import annotations
 from typing import Optional
 
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.ai.local_orchestrator.config import LocalAIConfig, load_config, save_config
+from app.ai.local_orchestrator.lms_client import LMSClient
+from app.ai.local_orchestrator.presets import VALID_MODES
 from app.database import get_db
 from app.database.models import Employee
 from app.services.audit_service import log_audit
 from app.services.auth_service import require_permission
-
-from app.ai.local_orchestrator.config import (
-    LocalAIConfig,
-    EmbeddingConfig,
-    MainLLMConfig,
-    SamplingProfile,
-    SamplingProfiles,
-    VisionConfig,
-    load_config,
-    save_config,
-)
-from app.ai.local_orchestrator.lms_client import LMSClient
-from app.ai.local_orchestrator.presets import VALID_MODES
 
 router = APIRouter()
 
@@ -86,6 +76,13 @@ class SamplingProfilesOut(BaseModel):
     vision: SamplingProfileOut
 
 
+class SettingsModelsOut(BaseModel):
+    llm_model_id: Optional[str] = None
+    vision_model_id: Optional[str] = None
+    embedding_model_id: Optional[str] = None
+    lms_host: Optional[str] = None
+
+
 class LocalAIConfigOut(BaseModel):
     """Config returned to the UI — auth token is masked."""
 
@@ -97,32 +94,63 @@ class LocalAIConfigOut(BaseModel):
     main_llm: MainLLMConfigOut
     embedding: EmbeddingConfigOut
     sampling: SamplingProfilesOut
+    settings_models: SettingsModelsOut = Field(default_factory=SettingsModelsOut)
 
 
 class VisionConfigUpdate(BaseModel):
     model_id: Optional[str] = None
     fallback_model_id: Optional[str] = None
-    estimated_ram_gb: Optional[float] = None
-    context_length: Optional[int] = None
-    eval_batch_size: Optional[int] = None
-    gpu_ratio: Optional[float] = None
+    estimated_ram_gb: Optional[float] = Field(default=None, gt=0)
+    context_length: Optional[int] = Field(default=None, gt=0)
+    eval_batch_size: Optional[int] = Field(default=None, gt=0)
+    gpu_ratio: Optional[float] = Field(default=None, ge=0, le=1)
+
+    @field_validator("model_id", "fallback_model_id")
+    @classmethod
+    def _validate_model_name(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        value = v.strip()
+        if not value:
+            raise ValueError("model ID cannot be blank")
+        return value
 
 
 class MainLLMConfigUpdate(BaseModel):
     model_id: Optional[str] = None
     fallback_model_id: Optional[str] = None
-    estimated_ram_gb: Optional[float] = None
-    context_length: Optional[int] = None
-    eval_batch_size: Optional[int] = None
-    gpu_ratio: Optional[float] = None
+    estimated_ram_gb: Optional[float] = Field(default=None, gt=0)
+    context_length: Optional[int] = Field(default=None, gt=0)
+    eval_batch_size: Optional[int] = Field(default=None, gt=0)
+    gpu_ratio: Optional[float] = Field(default=None, ge=0, le=1)
     flash_attention: Optional[bool] = None
     kv_cache_offload: Optional[bool] = None
+
+    @field_validator("model_id", "fallback_model_id")
+    @classmethod
+    def _validate_model_name(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        value = v.strip()
+        if not value:
+            raise ValueError("model ID cannot be blank")
+        return value
 
 
 class EmbeddingConfigUpdate(BaseModel):
     model_id: Optional[str] = None
     fallback_model_id: Optional[str] = None
-    estimated_ram_gb: Optional[float] = None
+    estimated_ram_gb: Optional[float] = Field(default=None, gt=0)
+
+    @field_validator("model_id", "fallback_model_id")
+    @classmethod
+    def _validate_model_name(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        value = v.strip()
+        if not value:
+            raise ValueError("model ID cannot be blank")
+        return value
 
 
 class LocalAIConfigUpdate(BaseModel):
@@ -138,7 +166,7 @@ class LocalAIConfigUpdate(BaseModel):
     mode: Optional[str] = None
     lms_host: Optional[str] = None
     lms_auth_token: Optional[str] = None  # write-only; see masking rules above
-    ram_headroom_gb: Optional[float] = None
+    ram_headroom_gb: Optional[float] = Field(default=None, ge=0)
     vision: Optional[VisionConfigUpdate] = None
     main_llm: Optional[MainLLMConfigUpdate] = None
     embedding: Optional[EmbeddingConfigUpdate] = None
@@ -149,6 +177,16 @@ class LocalAIConfigUpdate(BaseModel):
         if v is not None and v not in VALID_MODES:
             raise ValueError(f"mode must be one of {sorted(VALID_MODES)}, got {v!r}")
         return v
+
+    @field_validator("lms_host")
+    @classmethod
+    def _validate_lms_host(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        value = v.strip()
+        if not value:
+            raise ValueError("lms_host cannot be blank")
+        return value
 
 
 class HealthOut(BaseModel):
@@ -167,7 +205,10 @@ def _mask_token(token: str) -> str:
     return "" if not token else _AUTH_TOKEN_PLACEHOLDER
 
 
-def _build_out(config: LocalAIConfig) -> LocalAIConfigOut:
+def _build_out(
+    config: LocalAIConfig,
+    settings_models: Optional[SettingsModelsOut] = None,
+) -> LocalAIConfigOut:
     return LocalAIConfigOut(
         mode=config.mode,
         lms_host=config.lms_host,
@@ -184,6 +225,7 @@ def _build_out(config: LocalAIConfig) -> LocalAIConfigOut:
             digest=SamplingProfileOut(**config.sampling.digest.model_dump()),
             vision=SamplingProfileOut(**config.sampling.vision.model_dump()),
         ),
+        settings_models=settings_models or SettingsModelsOut(),
     )
 
 
@@ -225,6 +267,100 @@ def _apply_update(existing: LocalAIConfig, update: LocalAIConfigUpdate) -> Local
     return LocalAIConfig(**data)
 
 
+def _strip_openai_path(base_url: Optional[str]) -> Optional[str]:
+    if not base_url:
+        return None
+    value = base_url.rstrip("/")
+    if value.endswith("/v1"):
+        value = value[:-3]
+    return value or None
+
+
+async def _resolve_settings_models(db: AsyncSession) -> SettingsModelsOut:
+    """Resolve the concrete model IDs selected on /settings."""
+    from app.ai.embedding_catalog import get_spec as get_embedding_spec
+    from app.ai.llm_catalog import get_spec as get_llm_spec
+    from app.ai.vision_catalog import get_spec as get_vision_spec
+    from app.services.config_service import ConfigService
+
+    svc = ConfigService(db)
+    active_llm = await svc.get("active_llm_model_spec_id")
+    active_vision = await svc.get("active_vision_model_spec_id")
+    active_embedding = await svc.get("active_embedding_model_spec_id")
+
+    llm_model_id: Optional[str] = None
+    if active_llm:
+        spec = get_llm_spec(active_llm)
+        llm_model_id = (
+            await svc.get("llm_custom_model_id")
+            if spec.id == "openai_compatible/custom"
+            else spec.model_id
+        )
+
+    vision_model_id: Optional[str] = None
+    if active_vision:
+        spec = get_vision_spec(active_vision)
+        vision_model_id = (
+            await svc.get("vision_custom_model_id")
+            if spec.id == "openai_compatible/vision-custom"
+            else spec.model_id
+        )
+
+    embedding_model_id: Optional[str] = None
+    if active_embedding:
+        spec = get_embedding_spec(active_embedding)
+        embedding_model_id = (
+            await svc.get("embedding_custom_model_id")
+            if spec.id.startswith("openai_compatible/embedding-")
+            else spec.model_id
+        )
+
+    lms_host = (
+        _strip_openai_path(await svc.get("llm_base_url"))
+        or _strip_openai_path(await svc.get("vision_base_url"))
+        or _strip_openai_path(await svc.get("embedding_base_url"))
+    )
+
+    return SettingsModelsOut(
+        llm_model_id=llm_model_id,
+        vision_model_id=vision_model_id,
+        embedding_model_id=embedding_model_id,
+        lms_host=lms_host,
+    )
+
+
+def _apply_settings_models(
+    existing: LocalAIConfig,
+    settings_models: SettingsModelsOut,
+) -> LocalAIConfig:
+    data = existing.model_dump()
+    if settings_models.lms_host:
+        data["lms_host"] = settings_models.lms_host
+    if settings_models.llm_model_id:
+        data["main_llm"]["model_id"] = settings_models.llm_model_id
+    if settings_models.vision_model_id:
+        data["vision"]["model_id"] = settings_models.vision_model_id
+    if settings_models.embedding_model_id:
+        data["embedding"]["model_id"] = settings_models.embedding_model_id
+    return LocalAIConfig(**data)
+
+
+async def _reset_router_best_effort() -> None:
+    """Reset in-process runtime caches; worker processes reload on next call."""
+    try:
+        from app.ai.local_orchestrator.phase_router import reset_router
+
+        await reset_router()
+    except Exception:
+        pass
+    try:
+        from app.ai.runtime_profile import invalidate
+
+        invalidate()
+    except Exception:
+        pass
+
+
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
@@ -237,7 +373,8 @@ async def get_local_ai_config(
 ) -> LocalAIConfigOut:
     """Return current Local AI config with auth token masked."""
     config = await load_config(db)
-    return _build_out(config)
+    settings_models = await _resolve_settings_models(db)
+    return _build_out(config, settings_models)
 
 
 @router.post("/admin/local-ai/config", response_model=LocalAIConfigOut)
@@ -255,7 +392,9 @@ async def update_local_ai_config(
         reason=f"Updated local AI config; mode={merged.mode}",
     )
     await db.commit()
-    return _build_out(merged)
+    await _reset_router_best_effort()
+    settings_models = await _resolve_settings_models(db)
+    return _build_out(merged, settings_models)
 
 
 @router.get("/admin/local-ai/health", response_model=HealthOut)
@@ -305,4 +444,25 @@ async def reset_to_max_preset(
         reason="Reset local AI config to MAX_PRESET defaults",
     )
     await db.commit()
-    return _build_out(reset_config)
+    await _reset_router_best_effort()
+    settings_models = await _resolve_settings_models(db)
+    return _build_out(reset_config, settings_models)
+
+
+@router.post("/admin/local-ai/sync-settings", response_model=LocalAIConfigOut)
+async def sync_from_settings(
+    db: AsyncSession = Depends(get_db),
+    _user: Employee = require_permission("org:settings:manage"),
+) -> LocalAIConfigOut:
+    """Copy active /settings model choices into Local AI model fields."""
+    existing = await load_config(db)
+    settings_models = await _resolve_settings_models(db)
+    synced = _apply_settings_models(existing, settings_models)
+    await save_config(db, synced)
+    await log_audit(
+        db, _user, "sync", "local_ai_config", "global",
+        reason="Synced local AI model IDs from Settings selections",
+    )
+    await db.commit()
+    await _reset_router_best_effort()
+    return _build_out(synced, settings_models)

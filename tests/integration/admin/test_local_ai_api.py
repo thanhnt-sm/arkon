@@ -23,8 +23,7 @@ import types
 from typing import Optional
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 # ---------------------------------------------------------------------------
@@ -78,8 +77,8 @@ def _make_test_app(kv_mock_cls: MagicMock) -> tuple[FastAPI, TestClient]:
     """
     from app.database import get_db
     from app.database.models import Employee
-    from app.services.auth_service import get_current_user
     from app.routers.admin_local_ai import router
+    from app.services.auth_service import get_current_user
 
     app = FastAPI()
 
@@ -138,15 +137,13 @@ def test_get_config_returns_defaults_when_kv_empty():
 
 
 def test_post_config_valid_body_persists_and_returns_updated():
-    from app.services.audit_service import log_audit
-
     store, mock_cls = _make_kv_backend({})
     original = _inject_config_service(mock_cls)
     try:
         _, client = _make_test_app(mock_cls)
 
         with patch("app.routers.admin_local_ai.log_audit", new_callable=AsyncMock):
-            with patch("app.routers.admin_local_ai.save_config", new_callable=AsyncMock) as mock_save:
+            with patch("app.routers.admin_local_ai.save_config", new_callable=AsyncMock):
                 with patch("app.routers.admin_local_ai.load_config", new_callable=AsyncMock) as mock_load:
                     from app.ai.local_orchestrator.config import LocalAIConfig
                     mock_load.return_value = LocalAIConfig(mode="off")
@@ -165,6 +162,79 @@ def test_post_config_valid_body_persists_and_returns_updated():
     data = resp.json()
     assert data["mode"] == "max"
     assert data["lms_host"] == "http://192.168.1.10:1234"
+
+
+def test_post_config_persists_manual_model_ids_when_settings_differs():
+    initial = {
+        "active_llm_model_spec_id": "openai_compatible/custom",
+        "llm_custom_model_id": "settings-llm",
+        "active_vision_model_spec_id": "openai_compatible/vision-custom",
+        "vision_custom_model_id": "settings-vision",
+        "active_embedding_model_spec_id": "openai_compatible/embedding-1024",
+        "embedding_custom_model_id": "settings-embedding",
+        "local_ai.mode": "max",
+    }
+    store, mock_cls = _make_kv_backend(initial)
+    original = _inject_config_service(mock_cls)
+    try:
+        _, client = _make_test_app(mock_cls)
+
+        with patch("app.routers.admin_local_ai.log_audit", new_callable=AsyncMock):
+            resp = client.post(
+                "/api/admin/local-ai/config",
+                json={
+                    "vision": {"model_id": "manual-vision"},
+                    "main_llm": {"model_id": "manual-main"},
+                    "embedding": {"model_id": "manual-embedding"},
+                },
+            )
+    finally:
+        _restore_config_service(original)
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["vision"]["model_id"] == "manual-vision"
+    assert data["main_llm"]["model_id"] == "manual-main"
+    assert data["embedding"]["model_id"] == "manual-embedding"
+    assert data["settings_models"]["vision_model_id"] == "settings-vision"
+    assert store["local_ai.vision.model_id"] == "manual-vision"
+    assert store["local_ai.main_llm.model_id"] == "manual-main"
+    assert store["local_ai.embedding.model_id"] == "manual-embedding"
+
+
+def test_post_config_rejects_blank_model_id():
+    store, mock_cls = _make_kv_backend({})
+    original = _inject_config_service(mock_cls)
+    try:
+        _, client = _make_test_app(mock_cls)
+        resp = client.post(
+            "/api/admin/local-ai/config",
+            json={"vision": {"model_id": "   "}},
+        )
+    finally:
+        _restore_config_service(original)
+
+    assert resp.status_code == 422
+    assert "local_ai.vision.model_id" not in store
+
+
+def test_post_config_rejects_invalid_numeric_values():
+    store, mock_cls = _make_kv_backend({})
+    original = _inject_config_service(mock_cls)
+    try:
+        _, client = _make_test_app(mock_cls)
+        resp = client.post(
+            "/api/admin/local-ai/config",
+            json={
+                "ram_headroom_gb": -0.5,
+                "vision": {"gpu_ratio": 1.5},
+            },
+        )
+    finally:
+        _restore_config_service(original)
+
+    assert resp.status_code == 422
+    assert "local_ai.ram_headroom_gb" not in store
 
 
 # ---------------------------------------------------------------------------
@@ -295,9 +365,9 @@ def test_unauthenticated_get_config_returns_401_or_403():
     """Without auth override, get_current_user raises 401/403 (no token)."""
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
+
     from app.database import get_db
     from app.routers.admin_local_ai import router
-    from app.services.config_service import ConfigService  # type: ignore[import]
 
     app = FastAPI()
 
@@ -352,7 +422,41 @@ def test_post_config_auth_token_placeholder_keeps_existing():
 
 
 # ---------------------------------------------------------------------------
-# 9. LocalAIConfig.from_max_preset classmethod
+# 9. POST /sync-settings copies active Settings model IDs into Local AI
+# ---------------------------------------------------------------------------
+
+
+def test_post_sync_settings_copies_active_settings_models():
+    initial = {
+        "active_llm_model_spec_id": "openai_compatible/custom",
+        "llm_custom_model_id": "local-llm-from-settings",
+        "llm_base_url": "http://192.168.1.6:1234/v1",
+        "active_vision_model_spec_id": "openai_compatible/vision-custom",
+        "vision_custom_model_id": "local-vision-from-settings",
+        "active_embedding_model_spec_id": "openai_compatible/embedding-1024",
+        "embedding_custom_model_id": "local-embedding-from-settings",
+    }
+    store, mock_cls = _make_kv_backend(initial)
+    original = _inject_config_service(mock_cls)
+    try:
+        _, client = _make_test_app(mock_cls)
+
+        with patch("app.routers.admin_local_ai.log_audit", new_callable=AsyncMock):
+            resp = client.post("/api/admin/local-ai/sync-settings")
+    finally:
+        _restore_config_service(original)
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["lms_host"] == "http://192.168.1.6:1234"
+    assert data["main_llm"]["model_id"] == "local-llm-from-settings"
+    assert data["vision"]["model_id"] == "local-vision-from-settings"
+    assert data["embedding"]["model_id"] == "local-embedding-from-settings"
+    assert store["local_ai.main_llm.model_id"] == "local-llm-from-settings"
+
+
+# ---------------------------------------------------------------------------
+# 10. LocalAIConfig.from_max_preset classmethod
 # ---------------------------------------------------------------------------
 
 

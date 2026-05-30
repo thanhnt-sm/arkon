@@ -177,7 +177,23 @@ class ProviderRegistry:
                 model_id=cfg.main_llm.model_id,
                 base_url=cfg.lms_host,
             )
-            return LocalOrchestratorLLM(prov_cfg, router)
+            instance = LocalOrchestratorLLM(prov_cfg, router)
+            try:
+                from app.ai.runtime_profile import LLMRuntimeProfile, derive
+
+                context_length = max(1, int(cfg.main_llm.context_length))
+                profile = LLMRuntimeProfile(
+                    profile="local",
+                    context_length=context_length,
+                    model_name=cfg.main_llm.model_id,
+                    base_url=cfg.lms_host,
+                    cfg=derive("local", context_length),
+                )
+                instance.runtime_profile = profile  # type: ignore[attr-defined]
+            except Exception as exc:
+                logger.warning(f"runtime_profile attach failed for Local AI: {exc}")
+                instance.runtime_profile = None  # type: ignore[attr-defined]
+            return instance
 
         config = await self._load_llm_config()
         cls = _get_llm_class(config.provider)

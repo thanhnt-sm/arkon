@@ -12,6 +12,7 @@ import pytest
 from app.ai.mrp.digest import (
     MAX_DEPTH,
     MAX_DIGEST_CHARS,
+    _draft_pages_by_slug,
     _enforce_size_cap,
     _strip_unsafe_html,
     _validate_wiki_links,
@@ -145,3 +146,22 @@ def test_strip_unsafe_html_removes_style():
     result = _strip_unsafe_html(content)
     assert "<style>" not in result
     assert "color:red" not in result
+
+
+# ---------------------------------------------------------------------------
+# _draft_pages_by_slug
+# ---------------------------------------------------------------------------
+
+def test_draft_pages_by_slug_prefers_valid_fresh_drafts():
+    drafts = [
+        {"slug": "concept/a", "title": "A", "content_md": "# A\n\nFresh content"},
+        {"slug": "", "title": "Missing slug", "content_md": "ignored"},
+        {"slug": "concept/empty", "title": "Empty", "content_md": ""},
+        "not a dict",
+    ]
+
+    result = _draft_pages_by_slug(drafts)
+
+    assert set(result) == {"concept/a"}
+    assert result["concept/a"]["title"] == "A"
+    assert result["concept/a"]["content_md"].startswith("# A")

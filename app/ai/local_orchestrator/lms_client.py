@@ -21,6 +21,7 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 from typing import Optional, Protocol, runtime_checkable
+from urllib.parse import urlparse
 
 import pydantic
 from tenacity import (
@@ -31,6 +32,15 @@ from tenacity import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _sdk_api_host(host: str) -> str:
+    """Normalize HTTP base URLs to the host:port form expected by lmstudio SDK."""
+    value = host.strip().rstrip("/")
+    if "://" in value:
+        parsed = urlparse(value)
+        return parsed.netloc or parsed.path.split("/", 1)[0]
+    return value.split("/", 1)[0]
 
 
 # ---------------------------------------------------------------------------
@@ -57,10 +67,10 @@ class LoadOptions(pydantic.BaseModel):
     """
 
     context_length: int = 16384
-    gpu_ratio: float = 1.0  # 0.0–1.0 fraction of layers on GPU
-    flash_attention: bool = True
-    kv_cache_gpu_offload: bool = True
-    eval_batch_size: int = 512
+    gpu_ratio: Optional[float] = None  # 0.0–1.0 fraction of layers on GPU
+    flash_attention: Optional[bool] = None
+    kv_cache_gpu_offload: Optional[bool] = None
+    eval_batch_size: Optional[int] = None
     ttl_seconds: Optional[int] = None  # SDK-only: auto-unload after N idle seconds
 
 
@@ -74,6 +84,7 @@ class SamplingParams(pydantic.BaseModel):
     repeat_penalty: Optional[float] = None
     max_tokens: Optional[int] = None
     seed: Optional[int] = None
+    response_format_json: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -139,9 +150,18 @@ class LMSClient:
         # Store auth_token without ever logging its value
         self._auth_token = auth_token
         self._default_timeout_s = default_timeout_s
+        self._sdk_host = _sdk_api_host(host)
 
         self._inflight: dict[str, int] = {}
         self._lock: asyncio.Lock = asyncio.Lock()
+
+        from app.ai.local_orchestrator.lms_client_rest import LMSRestClient
+
+        self._rest = LMSRestClient(
+            host=host,
+            auth_token=auth_token,
+            default_timeout_s=default_timeout_s,
+        )
 
         # Detect backend at construction — no network call, no DB touch
         try:
@@ -152,13 +172,6 @@ class LMSClient:
             logger.info("LMSClient: using lmstudio SDK backend (host=%s)", host)
         except ImportError:
             self._mode = "rest"
-            from app.ai.local_orchestrator.lms_client_rest import LMSRestClient
-
-            self._rest = LMSRestClient(
-                host=host,
-                auth_token=auth_token,
-                default_timeout_s=default_timeout_s,
-            )
             logger.info("LMSClient: lmstudio SDK not installed — using REST fallback (host=%s)", host)
 
     # ------------------------------------------------------------------
@@ -193,36 +206,79 @@ class LMSClient:
         """Synchronous SDK load — must run in a thread."""
         lms = self._sdk_module
         lms.set_sync_api_timeout(timeout_s)
-        client = lms.Client(base_url=self._host)
+        client = lms.Client(api_host=self._sdk_host)
+        for loaded in client.llm.list_loaded():
+            loaded_model_id = getattr(loaded, "identifier", None) or getattr(loaded, "instance_id", None)
+            if str(loaded_model_id) == model_id:
+                logger.info("load skipped: model already loaded: %s", model_id)
+                return model_id
+            if hasattr(loaded, "get_info"):
+                try:
+                    info = loaded.get_info()
+                    loaded_model_id = (
+                        getattr(info, "model_key", None)
+                        or getattr(info, "identifier", None)
+                        or loaded_model_id
+                    )
+                except Exception:
+                    pass
+            if str(loaded_model_id) == model_id:
+                logger.info("load skipped: model already loaded: %s", model_id)
+                return model_id
         config: dict = {
             "contextLength": load_options.context_length,
-            "gpu": {"ratio": load_options.gpu_ratio},
         }
+        if load_options.gpu_ratio is not None:
+            config["gpu"] = {"ratio": load_options.gpu_ratio}
+        if load_options.eval_batch_size is not None:
+            config["evalBatchSize"] = load_options.eval_batch_size
+        if load_options.flash_attention is not None:
+            config["flashAttention"] = load_options.flash_attention
+        if load_options.kv_cache_gpu_offload is not None:
+            config["offloadKVCacheToGpu"] = load_options.kv_cache_gpu_offload
+        kwargs: dict = {"config": config}
         if load_options.ttl_seconds is not None:
-            config["ttl"] = load_options.ttl_seconds
-        model = client.llm.load(model_id, config=config)
-        # SDK model object exposes identifier / instance_id
-        return getattr(model, "instance_id", getattr(model, "identifier", model_id))
+            kwargs["ttl"] = load_options.ttl_seconds
+        client.llm.load_new_instance(model_id, **kwargs)
+        # Keep the model key as the runtime identifier. The OpenAI-compatible
+        # predict endpoint accepts model keys, and this avoids SDK-generated
+        # instance aliases leaking into REST chat calls.
+        return model_id
 
     def _sdk_unload_sync(self, instance_id: str) -> None:
         """Synchronous SDK unload — must run in a thread."""
         lms = self._sdk_module
-        client = lms.Client(base_url=self._host)
-        client.llm.unload(instance_id=instance_id)
+        client = lms.Client(api_host=self._sdk_host)
+        client.llm.unload(instance_id)
 
     def _sdk_list_loaded_sync(self) -> list[str]:
         """Synchronous SDK list — must run in a thread."""
         lms = self._sdk_module
-        client = lms.Client(base_url=self._host)
+        client = lms.Client(api_host=self._sdk_host)
         loaded = client.llm.list_loaded()
-        return [getattr(m, "instance_id", getattr(m, "identifier", "")) for m in loaded]
+        ids: list[str] = []
+        for model in loaded:
+            model_id = getattr(model, "identifier", None) or getattr(model, "instance_id", None)
+            if not model_id and hasattr(model, "get_info"):
+                try:
+                    info = model.get_info()
+                    model_id = (
+                        getattr(info, "model_key", None)
+                        or getattr(info, "identifier", None)
+                        or getattr(info, "instance_reference", None)
+                    )
+                except Exception:
+                    model_id = None
+            if model_id:
+                ids.append(str(model_id))
+        return ids
 
     def _sdk_health_sync(self) -> bool:
         """Synchronous SDK health ping — must run in a thread."""
         try:
             lms = self._sdk_module
             lms.set_sync_api_timeout(5)
-            client = lms.Client(base_url=self._host)
+            client = lms.Client(api_host=self._sdk_host)
             client.llm.list_loaded()
             return True
         except Exception as exc:
@@ -239,17 +295,17 @@ class LMSClient:
         """Synchronous SDK predict — must run in a thread."""
         lms = self._sdk_module
         lms.set_sync_api_timeout(timeout_s)
-        client = lms.Client(base_url=self._host)
+        client = lms.Client(api_host=self._sdk_host)
         handle = client.llm.model(instance_id)
         predict_opts: dict = {}
         if sampling.temperature is not None:
             predict_opts["temperature"] = sampling.temperature
         if sampling.top_p is not None:
-            predict_opts["topP"] = sampling.top_p
+            predict_opts["topPSampling"] = sampling.top_p
         if sampling.top_k is not None:
-            predict_opts["topK"] = sampling.top_k
+            predict_opts["topKSampling"] = sampling.top_k
         if sampling.min_p is not None:
-            predict_opts["minP"] = sampling.min_p
+            predict_opts["minPSampling"] = sampling.min_p
         if sampling.repeat_penalty is not None:
             predict_opts["repeatPenalty"] = sampling.repeat_penalty
         if sampling.max_tokens is not None:
@@ -354,12 +410,8 @@ class LMSClient:
 
         async with self._inflight_context(instance_id):
             if self._mode == "sdk":
-                result = await asyncio.to_thread(
-                    self._sdk_predict_sync,
-                    instance_id,
-                    messages,
-                    sampling,
-                    effective_timeout,
+                result = await self._rest.predict(
+                    instance_id, messages, sampling, effective_timeout
                 )
             else:
                 result = await self._rest.predict(

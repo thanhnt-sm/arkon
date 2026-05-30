@@ -34,6 +34,13 @@ def _clean_json_from_llm(s: str) -> str:
     s = re.sub(r'(?<!:)//[^\n]*', "", s)
     # Remove trailing commas before } or ]
     s = re.sub(r",\s*([}\]])", r"\1", s)
+    # Add missing commas between adjacent object fields/items on separate lines.
+    s = re.sub(
+        r'((?:"[^"\\]*(?:\\.[^"\\]*)*"|\d+(?:\.\d+)?|true|false|null|[}\]]))\s*\n\s*("[A-Za-z_][A-Za-z0-9_]*"\s*:)',
+        r"\1,\n\2",
+        s,
+    )
+    s = re.sub(r"}\s*\n\s*{", "},\n{", s)
     # Quote unquoted property names. We anchor on `{` or `,` (optionally
     # preceded by whitespace/newline) so we don't touch identifiers that
     # legitimately appear inside string values.

@@ -140,6 +140,9 @@ services:
     depends_on:
       api:
         condition: service_healthy
+    networks:
+      - arkon_internal
+      - arkon_external
 
   worker_skills:
     <<: *backend
@@ -148,6 +151,9 @@ services:
     depends_on:
       api:
         condition: service_healthy
+    networks:
+      - arkon_internal
+      - arkon_external
 
   frontend:
     build:

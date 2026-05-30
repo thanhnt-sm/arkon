@@ -108,7 +108,7 @@ async def test_all_success_commits_each_page(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_one_stub_does_not_trip_breaker(monkeypatch):
+async def test_one_stub_aborts_before_commit_phase(monkeypatch):
     monkeypatch.setenv("MRP_WRITER_PACE_BASE_MS", "0")
     monkeypatch.setenv("MRP_WRITER_PACE_FAIL_MS", "0")
     monkeypatch.setenv("MRP_WRITER_BREAKER_THRESHOLD", "3")
@@ -123,9 +123,13 @@ async def test_one_stub_does_not_trip_breaker(monkeypatch):
         _make_result("page-3"),
     ])
 
-    results = await _run_refine_sequential(specs, write_one, session, plan)
+    with pytest.raises(WriterBatchIncomplete) as exc_info:
+        await _run_refine_sequential(specs, write_one, session, plan)
 
-    assert len(results) == 4
+    assert exc_info.value.reason == "stub_drafts"
+    assert exc_info.value.drafted == 3
+    assert exc_info.value.expected == 4
+    assert write_one.await_count == 4
     assert session.commit_calls == 4
 
 
@@ -159,7 +163,7 @@ async def test_three_consecutive_stubs_trip_breaker_skips_remaining(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_stub_then_success_resets_breaker(monkeypatch):
+async def test_stub_then_success_resets_breaker_but_still_aborts_before_commit(monkeypatch):
     monkeypatch.setenv("MRP_WRITER_PACE_BASE_MS", "0")
     monkeypatch.setenv("MRP_WRITER_PACE_FAIL_MS", "0")
     monkeypatch.setenv("MRP_WRITER_BREAKER_THRESHOLD", "3")
@@ -178,9 +182,12 @@ async def test_stub_then_success_resets_breaker(monkeypatch):
         _make_result("page-6", stub=True),
     ])
 
-    results = await _run_refine_sequential(specs, write_one, session, plan)
+    with pytest.raises(WriterBatchIncomplete) as exc_info:
+        await _run_refine_sequential(specs, write_one, session, plan)
 
-    assert len(results) == 7
+    assert exc_info.value.reason == "stub_drafts"
+    assert exc_info.value.drafted == 2
+    assert exc_info.value.expected == 7
     assert write_one.await_count == 7
 
 
