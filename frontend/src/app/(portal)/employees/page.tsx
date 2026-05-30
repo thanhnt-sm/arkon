@@ -22,8 +22,8 @@ export type Employee = {
   name: string;
   email: string;
   role: string;
-  department_id: string;
-  department_name: string;
+  department_ids: string[];
+  department_names: string[];
   is_active: boolean;
   has_token: boolean;
   last_connected?: string;

@@ -26,7 +26,7 @@ type Employee = {
   name: string;
   email: string;
   role: string;
-  department_id: string;
+  department_ids: string[];
   custom_role_id?: string;
 };
 
@@ -52,7 +52,7 @@ export function EmployeeDialog({
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [role, setRole] = useState("employee");
-  const [deptId, setDeptId] = useState("");
+  const [deptIds, setDeptIds] = useState<string[]>([]);
   const [customRoleId, setCustomRoleId] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -90,7 +90,7 @@ export function EmployeeDialog({
           body: { name: val, description: "" }
         });
         setLocalDepartments(prev => [...prev, newDept]);
-        setDeptId(newDept.id);
+        setDeptIds(prev => prev.includes(newDept.id) ? prev : [...prev, newDept.id]);
         setInlinePrompt(p => ({ ...p, open: false }));
       }
     });
@@ -131,7 +131,7 @@ export function EmployeeDialog({
       setName(employee.name);
       setEmail(employee.email);
       setRole(employee.role);
-      setDeptId(employee.department_id);
+      setDeptIds(employee.department_ids ?? []);
       setCustomRoleId(employee.custom_role_id || "");
       setPassword("");
     } else {
@@ -139,7 +139,7 @@ export function EmployeeDialog({
       setEmail("");
       setPassword("");
       setRole("employee");
-      setDeptId(departments[0]?.id || "");
+      setDeptIds(departments[0]?.id ? [departments[0].id] : []);
       setCustomRoleId("");
     }
     setError("");
@@ -151,11 +151,11 @@ export function EmployeeDialog({
     setError("");
 
     try {
-      const body: Record<string, string | null> = {
+      const body: Record<string, unknown> = {
         name,
         email,
         role,
-        department_id: deptId,
+        department_ids: deptIds,
         custom_role_id: customRoleId || null,
       };
       if (password) body.password = password;
@@ -243,26 +243,29 @@ export function EmployeeDialog({
             </div>
 
             <div className="flex flex-col gap-2">
-              <Label>Department</Label>
-              <Select 
-                value={deptId} 
+              <Label>Departments</Label>
+              <Select
+                value=""
                 onValueChange={(v) => {
+                  if (!v) return;
                   if (v === "__new__") {
                     handleCreateDepartment();
                     return;
                   }
-                  if (v) setDeptId(v);
+                  setDeptIds(prev => prev.includes(v) ? prev : [...prev, v]);
                 }}
               >
                 <SelectTrigger className="bg-background">
-                  {deptId ? (localDepartments.find(d => d.id === deptId)?.name || deptId) : <SelectValue placeholder="Select" />}
+                  <span className="text-muted-foreground">Add department…</span>
                 </SelectTrigger>
                 <SelectContent className="!w-max min-w-(--anchor-width)">
-                  {localDepartments.map((d) => (
-                    <SelectItem key={d.id} value={d.id}>
-                      {d.name}
-                    </SelectItem>
-                  ))}
+                  {localDepartments
+                    .filter(d => !deptIds.includes(d.id))
+                    .map((d) => (
+                      <SelectItem key={d.id} value={d.id}>
+                        {d.name}
+                      </SelectItem>
+                    ))}
                   <div className="h-px bg-border my-1 -mx-1" />
                   <SelectItem value="__new__" className="text-primary font-medium focus:text-primary">
                     <span className="flex items-center gap-2">
@@ -272,6 +275,33 @@ export function EmployeeDialog({
                   </SelectItem>
                 </SelectContent>
               </Select>
+              <div className="flex flex-wrap gap-1.5 min-h-7">
+                {deptIds.length === 0 ? (
+                  <span className="text-xs text-muted-foreground italic">
+                    No departments — user will only see global resources
+                  </span>
+                ) : (
+                  deptIds.map((id) => {
+                    const d = localDepartments.find(x => x.id === id);
+                    return (
+                      <span
+                        key={id}
+                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-secondary text-secondary-foreground text-xs"
+                      >
+                        {d?.name || id}
+                        <button
+                          type="button"
+                          onClick={() => setDeptIds(prev => prev.filter(x => x !== id))}
+                          className="hover:text-destructive transition-colors"
+                          aria-label={`Remove ${d?.name || id}`}
+                        >
+                          <span className="material-symbols-outlined text-sm leading-none">close</span>
+                        </button>
+                      </span>
+                    );
+                  })
+                )}
+              </div>
             </div>
           </div>
 

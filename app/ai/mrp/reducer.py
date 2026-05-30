@@ -592,7 +592,12 @@ async def run_planning_call(
     """Single LLM call to produce the Compilation Plan JSON."""
     # Calculate target based on the actual number of extracted concepts rather than just document length
     total_extracted_items = len(canonical_entities) + len(canonical_concepts)
-    target_pages = _target_page_count(strategy, total_extracted_items)
+    if strategy == "single_pass":
+        target_pages = max(3, min(30, total_extracted_items // 2))
+    elif strategy == "standard":
+        target_pages = max(8, min(80, total_extracted_items // 3))
+    else:
+        target_pages = max(15, min(200, total_extracted_items // 3))
 
     kt_context = kt_name or "(no specific knowledge type)"
     if kt_desc:
@@ -617,8 +622,8 @@ async def run_planning_call(
     sorted_entities = sorted(canonical_entities, key=lambda x: x.get("mention_count", 0), reverse=True)
     sorted_concepts = sorted(canonical_concepts, key=lambda x: x.get("mention_count", 0), reverse=True)
 
-    entities_summary = "\n".join(_fmt_entity(e) for e in sorted_entities[:100]) or "  (none)"
-    concepts_summary = "\n".join(_fmt_concept(c) for c in sorted_concepts[:100]) or "  (none)"
+    entities_summary = "\n".join(_fmt_entity(e) for e in sorted_entities[:300]) or "  (none)"
+    concepts_summary = "\n".join(_fmt_concept(c) for c in sorted_concepts[:300]) or "  (none)"
 
     kb_lines = []
     for name, rec in reconciliation.items():

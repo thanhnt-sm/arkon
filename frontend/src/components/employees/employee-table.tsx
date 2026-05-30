@@ -33,8 +33,8 @@ type Employee = {
   name: string;
   email: string;
   role: string;
-  department_id: string;
-  department_name: string;
+  department_ids: string[];
+  department_names: string[];
   is_active: boolean;
   has_token: boolean;
   last_connected?: string;
@@ -222,7 +222,20 @@ export function EmployeeTable({
                     )}
                   </TableCell>
                   <TableCell>
-                    <span className="text-sm text-foreground">{emp.department_name}</span>
+                    {emp.department_names.length === 0 ? (
+                      <span className="text-xs text-muted-foreground/50">—</span>
+                    ) : (
+                      <div className="flex flex-wrap gap-1">
+                        {emp.department_names.map((n) => (
+                          <span
+                            key={n}
+                            className="inline-block px-1.5 py-0.5 rounded bg-secondary text-secondary-foreground text-xs"
+                          >
+                            {n}
+                          </span>
+                        ))}
+                      </div>
+                    )}
                   </TableCell>
                   <TableCell>
                     <div className="flex items-center gap-1.5">

@@ -130,7 +130,10 @@ export default function WikiIndexPage() {
       }
       if (st === "department" && sid) {
         if (isAdmin || hasPermission("wiki:write:all")) return "direct";
-        if (hasPermission("wiki:write:own_dept") && user.department_id === sid) {
+        if (
+          hasPermission("wiki:write:own_dept") &&
+          user.department_ids.includes(sid)
+        ) {
           return "propose";
         }
         return null;

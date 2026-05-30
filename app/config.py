@@ -83,6 +83,23 @@ class Settings(BaseSettings):
         description="Reject /sources/upload + /projects/*/sources/upload + /skill-contributions/*/upload above this (MB). 0 disables.",
     )
 
+    mrp_multipass_writer_enabled: bool = Field(
+        default=True,
+        description="If True, REFINE uses multi-pass writer when source > budget; if False, falls back to single-pass with tiered selection",
+    )
+    auto_approve_extraction_threshold_tokens: int = Field(
+        default=200_000,
+        description="Doc <= this many tokens after extraction auto-proceeds. Larger docs pause at status='awaiting_approval' for human review.",
+    )
+    extraction_approval_ttl_hours: int = Field(
+        default=24,
+        description="Orphan sources stuck in 'awaiting_approval' longer than this are auto-deleted by cleanup cron.",
+    )
+    max_auto_recover_attempts: int = Field(
+        default=3,
+        description="Max times a source may be auto-flipped from stuck 'processing' back to 'error' before the retry API refuses further attempts. Prevents token-burning loops when the failure is deterministic (bad provider key, malformed file).",
+    )
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 
     @property

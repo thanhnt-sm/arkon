@@ -143,7 +143,7 @@ async def _can_contribute_to_page(session: AsyncSession, employee, page) -> bool
             return True
         return (
             "wiki:write:own_dept" in perms
-            and employee.department_id == page.scope_id
+            and page.scope_id in employee.department_ids
         )
     return has_any_permission(list(perms), "wiki", "write")
 
@@ -274,7 +274,7 @@ def register_tools(mcp: FastMCP):
                 query_embedding=query_embedding,
                 top_k=top_k,
                 allowed_kt_slugs=identity.allowed_knowledge_types,
-                department_id=identity.department_id,
+                department_ids=identity.department_ids,
                 project_ids=proj_uuids,
                 all_scopes=identity.is_admin,
             )
@@ -288,7 +288,7 @@ def register_tools(mcp: FastMCP):
                     session,
                     query_embedding=query_embedding,
                     top_k=5,
-                    department_id=identity.department_id,
+                    department_ids=identity.department_ids,
                     project_ids=proj_uuids,
                     inverse_scope=True,
                 )
@@ -382,13 +382,17 @@ def register_tools(mcp: FastMCP):
             page = await wiki_service.get_page_by_slug(
                 session, slug, allowed_kt_slugs=identity.allowed_knowledge_types,
             )
-            if not page and identity.department_id is not None:
-                page = await wiki_service.get_page_by_slug(
-                    session, slug,
-                    allowed_kt_slugs=identity.allowed_knowledge_types,
-                    scope_type="department",
-                    scope_id=identity.department_id,
-                )
+            if not page and identity.department_ids:
+                # Walk the user's departments until we hit a matching slug.
+                for did in identity.department_ids:
+                    page = await wiki_service.get_page_by_slug(
+                        session, slug,
+                        allowed_kt_slugs=identity.allowed_knowledge_types,
+                        scope_type="department",
+                        scope_id=did,
+                    )
+                    if page:
+                        break
             if not page and proj_uuids:
                 # Walk the user's workspaces until we hit a matching slug.
                 for pid in proj_uuids:
@@ -411,7 +415,7 @@ def register_tools(mcp: FastMCP):
                     inaccessible = [
                         p for p in others
                         if (
-                            (p.scope_type == "department" and p.scope_id != identity.department_id)
+                            (p.scope_type == "department" and p.scope_id not in identity.department_ids)
                             or (
                                 p.scope_type == "project"
                                 and p.scope_id not in excluded_proj_ids
@@ -494,7 +498,7 @@ def register_tools(mcp: FastMCP):
                 allowed_kt_slugs=identity.allowed_knowledge_types,
                 limit=limit,
                 offset=offset,
-                department_id=identity.department_id,
+                department_ids=identity.department_ids,
                 project_ids=proj_uuids,
                 all_scopes=identity.is_admin,
             )
@@ -1687,7 +1691,7 @@ def register_tools(mcp: FastMCP):
                         return "Error: requires contributor role or above in this workspace."
                 elif scope_type == "department" and sid:
                     if "wiki:write:all" not in perms and not (
-                        "wiki:write:own_dept" in perms and employee.department_id == sid
+                        "wiki:write:own_dept" in perms and sid in employee.department_ids
                     ):
                         return "Error: insufficient permission to propose pages in this department."
                 else:

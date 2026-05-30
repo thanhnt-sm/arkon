@@ -104,7 +104,7 @@ export default function WikiPageViewer() {
   const isGlobalAdmin = user?.role === "admin";
   const isDeptScoped = scopeType === "department";
   const isOwnDept =
-    isDeptScoped && !!scopeId && !!user?.department_id && user.department_id === scopeId;
+    isDeptScoped && !!scopeId && !!user && user.department_ids.includes(scopeId);
 
   // Can directly edit (PUT /wiki/pages/{slug}). Department-scoped pages
   // require wiki:write:all — own_dept only grants propose access.
@@ -149,7 +149,10 @@ export default function WikiPageViewer() {
       }
       if (st === "department" && sid) {
         if (isGlobalAdmin || hasPermission("wiki:write:all")) return "direct";
-        if (hasPermission("wiki:write:own_dept") && user.department_id === sid) {
+        if (
+          hasPermission("wiki:write:own_dept") &&
+          user.department_ids.includes(sid)
+        ) {
           return "propose";
         }
         return null;

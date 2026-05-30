@@ -59,8 +59,8 @@ class ProfileResponse(BaseModel):
     name: str
     email: str
     role: str
-    department_id: str
-    department_name: str
+    department_ids: list[str] = []
+    department_names: list[str] = []
     is_active: bool
     has_mcp_token: bool
     permissions: list[str] = []
@@ -96,8 +96,10 @@ def _build_user_dict(employee: Employee, permissions: list[str], workspace_membe
         "name": employee.name,
         "email": employee.email,
         "role": employee.role,
-        "department_id": str(employee.department_id),
-        "department_name": employee.department.name if employee.department else "",
+        "department_ids": [str(ed.department_id) for ed in employee.employee_departments],
+        "department_names": [
+            ed.department.name for ed in employee.employee_departments if ed.department
+        ],
         "permissions": permissions,
         "workspace_memberships": workspace_memberships or [],
     }
@@ -146,8 +148,10 @@ async def get_profile(
         name=current_user.name,
         email=current_user.email,
         role=current_user.role,
-        department_id=str(current_user.department_id),
-        department_name=current_user.department.name if current_user.department else "",
+        department_ids=[str(ed.department_id) for ed in current_user.employee_departments],
+        department_names=[
+            ed.department.name for ed in current_user.employee_departments if ed.department
+        ],
         is_active=current_user.is_active,
         has_mcp_token=bool(current_user.mcp_token_hash),
         permissions=permissions,

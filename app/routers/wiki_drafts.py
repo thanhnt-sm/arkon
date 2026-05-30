@@ -258,7 +258,7 @@ async def _can_propose(db: AsyncSession, user: Employee, page: WikiPage) -> bool
     if page.scope_type == "department" and page.scope_id:
         if "wiki:write:all" in perms:
             return True
-        if "wiki:write:own_dept" in perms and user.department_id == page.scope_id:
+        if "wiki:write:own_dept" in perms and page.scope_id in user.department_ids:
             return True
         return False
     return has_any_permission(list(perms), "wiki", "write")
@@ -988,7 +988,7 @@ async def propose_create_page(
         elif body.scope_type == "department" and body.scope_id:
             # own_dept perm only counts when proposing in the user's own dept.
             if "wiki:write:all" not in perms and not (
-                "wiki:write:own_dept" in perms and user.department_id == body.scope_id
+                "wiki:write:own_dept" in perms and body.scope_id in user.department_ids
             ):
                 raise HTTPException(
                     403,

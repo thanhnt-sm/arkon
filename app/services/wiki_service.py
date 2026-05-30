@@ -45,30 +45,30 @@ def _scope_filter(scope_type: str = "global", scope_id: Optional[uuid.UUID] = No
     return and_(WikiPage.scope_type == scope_type, WikiPage.scope_id.is_(None))
 
 
-def _scope_filter_with_dept(department_id: Optional[uuid.UUID] = None):
-    """OR-filter: global pages + department pages visible to the given dept member.
+def _scope_filter_with_dept(department_ids: Optional[list[uuid.UUID]] = None):
+    """OR-filter: global pages + department pages visible to the given dept members.
 
     DEPRECATED for MCP read paths — does NOT include project-scoped pages,
     which made wiki pages of workspaces invisible to their own members. Use
     `_scope_filter_for_identity` instead.
     """
-    if department_id:
+    if department_ids:
         return or_(
             and_(WikiPage.scope_type == "global", WikiPage.scope_id.is_(None)),
-            and_(WikiPage.scope_type == "department", WikiPage.scope_id == department_id),
+            and_(WikiPage.scope_type == "department", WikiPage.scope_id.in_(department_ids)),
         )
     return _scope_filter("global")
 
 
 def _scope_filter_for_identity(
-    department_id: Optional[uuid.UUID] = None,
+    department_ids: Optional[list[uuid.UUID]] = None,
     project_ids: Optional[list[uuid.UUID]] = None,
 ):
     """OR-filter for the MCP read path: every wiki page the user can see.
 
     Includes:
       - All global pages.
-      - Department pages of the user's own department.
+      - Department pages of every department the user belongs to.
       - Project pages of every workspace the user is a member of.
 
     Without the project branch, members of a workspace cannot find their own
@@ -76,9 +76,9 @@ def _scope_filter_for_identity(
     drill-down and assume the page doesn't exist.
     """
     clauses = [and_(WikiPage.scope_type == "global", WikiPage.scope_id.is_(None))]
-    if department_id is not None:
+    if department_ids:
         clauses.append(
-            and_(WikiPage.scope_type == "department", WikiPage.scope_id == department_id)
+            and_(WikiPage.scope_type == "department", WikiPage.scope_id.in_(department_ids))
         )
     if project_ids:
         clauses.append(
@@ -88,13 +88,13 @@ def _scope_filter_for_identity(
 
 
 def _inverse_scope_filter_for_identity(
-    department_id: Optional[uuid.UUID] = None,
+    department_ids: Optional[list[uuid.UUID]] = None,
     project_ids: Optional[list[uuid.UUID]] = None,
 ):
     """Pages OUTSIDE the user's accessible scope — used by out-of-scope hints.
 
     Excludes global pages (everyone sees those) so the inverse is just:
-      - Department pages of OTHER departments.
+      - Department pages of departments the user does NOT belong to.
       - Project pages of workspaces the user is NOT a member of.
     """
     project_clause = (
@@ -103,8 +103,8 @@ def _inverse_scope_filter_for_identity(
         else WikiPage.scope_type == "project"
     )
     dept_clause = (
-        and_(WikiPage.scope_type == "department", WikiPage.scope_id != department_id)
-        if department_id is not None
+        and_(WikiPage.scope_type == "department", WikiPage.scope_id.notin_(department_ids))
+        if department_ids
         else WikiPage.scope_type == "department"
     )
     return or_(dept_clause, project_clause)
@@ -312,7 +312,7 @@ async def list_pages(
     offset: int = 0,
     scope_type: str = "global",
     scope_id: Optional[uuid.UUID] = None,
-    department_id: Optional[uuid.UUID] = None,
+    department_ids: Optional[list[uuid.UUID]] = None,
     project_ids: Optional[list[uuid.UUID]] = None,
     all_scopes: bool = False,
 ) -> list[WikiPage]:
@@ -320,14 +320,15 @@ async def list_pages(
 
     Scope behaviour:
       - `all_scopes=True`: no scope filter at all (admin bypass).
-      - `department_id` (and optionally `project_ids`) given: union of global
-        + user's department + every workspace the user is a member of.
+      - `department_ids` (and optionally `project_ids`) given: union of global
+        + every department the user belongs to + every workspace the user is
+        a member of.
       - Otherwise: exact `scope_type`/`scope_id` (pipeline write path).
     """
     if all_scopes:
         scope_clause = None
-    elif department_id is not None or project_ids:
-        scope_clause = _scope_filter_for_identity(department_id, project_ids)
+    elif department_ids or project_ids:
+        scope_clause = _scope_filter_for_identity(department_ids, project_ids)
     else:
         scope_clause = _scope_filter(scope_type, scope_id)
     stmt = (
@@ -362,7 +363,7 @@ async def search_pages_semantic(
     scope_type: str = "global",
     scope_id: Optional[uuid.UUID] = None,
     spec_id: Optional[str] = None,
-    department_id: Optional[uuid.UUID] = None,
+    department_ids: Optional[list[uuid.UUID]] = None,
     project_ids: Optional[list[uuid.UUID]] = None,
     inverse_scope: bool = False,
     all_scopes: bool = False,
@@ -376,8 +377,8 @@ async def search_pages_semantic(
     only used by tests and internal tooling.
 
     Scope behaviour:
-      - If `department_id` or `project_ids` is given: returns pages from
-        global + user's department + user's workspaces (MCP read path).
+      - If `department_ids` or `project_ids` is given: returns pages from
+        global + user's departments + user's workspaces (MCP read path).
       - If `inverse_scope=True`: returns pages OUTSIDE that scope (other
         departments, workspaces the user isn't a member of). Used to surface
         "you don't have access" hints.
@@ -402,9 +403,9 @@ async def search_pages_semantic(
     if all_scopes and not inverse_scope:
         scope_clause = None
     elif inverse_scope:
-        scope_clause = _inverse_scope_filter_for_identity(department_id, project_ids)
-    elif department_id is not None or project_ids:
-        scope_clause = _scope_filter_for_identity(department_id, project_ids)
+        scope_clause = _inverse_scope_filter_for_identity(department_ids, project_ids)
+    elif department_ids or project_ids:
+        scope_clause = _scope_filter_for_identity(department_ids, project_ids)
     else:
         scope_clause = _scope_filter(scope_type, scope_id)
 

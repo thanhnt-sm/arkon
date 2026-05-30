@@ -184,7 +184,8 @@ def _build_wiki_scope_filter(user: Employee):
             ),
             and_(
                 WikiPage.scope_type == "department",
-                WikiPage.scope_id == user.department_id,
+                WikiPage.scope_id.in_(user.department_ids) if user.department_ids
+                else WikiPage.id == None,  # noqa: E711 — no depts → no dept-scoped wiki
             ),
         )
 
@@ -294,7 +295,7 @@ async def get_wiki_page(
         if user.role != "admin":
             perms = _get_user_permissions(user)
             if "wiki:read:all" not in perms:
-                if user.department_id != page.scope_id:
+                if page.scope_id not in user.department_ids:
                     raise HTTPException(403, "Access denied — this page belongs to another department")
 
     backlinks = await wiki_service.get_backlinks(db, slug, page.scope_type, page.scope_id)
@@ -331,7 +332,7 @@ async def get_wiki_index(
                 raise HTTPException(403, "Access denied — you are not a member of this workspace")
     if st == "department" and sid is not None and user.role != "admin":
         perms = _get_user_permissions(user)
-        if "wiki:read:all" not in perms and user.department_id != sid:
+        if "wiki:read:all" not in perms and sid not in user.department_ids:
             raise HTTPException(403, "Access denied — this index belongs to another department")
 
     page = await wiki_service.get_page_by_slug(
@@ -362,11 +363,13 @@ async def list_my_wiki_scopes(
         )).all()
         for d in depts:
             scopes.append(WikiScope(scope_type="department", scope_id=d.id, name=d.name))
-    elif user.department_id is not None:
-        dept = (await db.execute(
-            select(Department.id, Department.name).where(Department.id == user.department_id)
-        )).first()
-        if dept:
+    elif user.department_ids:
+        depts = (await db.execute(
+            select(Department.id, Department.name)
+            .where(Department.id.in_(user.department_ids))
+            .order_by(Department.name)
+        )).all()
+        for dept in depts:
             scopes.append(WikiScope(scope_type="department", scope_id=dept.id, name=dept.name))
 
     # Projects

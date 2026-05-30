@@ -50,6 +50,8 @@ dependencies = [
     "cryptography>=44.0",
     "psutil>=5.9.0",
     "mammoth>=1.12.0",
+    # Tokenization (extraction token count for upload gate)
+    "tiktoken>=0.8.0",
 ]
 
 [project.optional-dependencies]

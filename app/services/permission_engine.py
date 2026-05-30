@@ -3,7 +3,9 @@ Permission Engine — resolves access decisions for Global and Workspace realms.
 
 Global Realm:
   - Permissions are scoped: resource:action:own_dept or resource:action:all
-  - own_dept = user's department_id matches source's departments (via source_departments)
+  - own_dept = user belongs to at least one department that the resource is
+    scoped to (via source_departments / skill_departments). Employees can be
+    members of multiple departments — see EmployeeDepartment.
   - all = no scope restriction
   - No departments on resource = Global (visible to everyone with the action permission)
 
@@ -90,13 +92,13 @@ async def can_access_document(
     action: str = "read",
 ) -> bool:
     """Check if user can perform action on a source document.
-    
+
     Logic:
     1. Admin → always True
     2. User has doc:{action}:all → True
     3. User has doc:{action}:own_dept →
        a. Source has no departments (Global doc) → True
-       b. Source has a department matching user.department_id → True
+       b. Source has any department in user.department_ids → True
        c. Otherwise → False
     4. Otherwise → False
     """
@@ -113,7 +115,8 @@ async def can_access_document(
     if f"doc:{action}:own_dept" not in permissions:
         return False
 
-    # Check if source is global (no departments) or belongs to user's department
+    # Check if source is global (no departments) or belongs to any of the
+    # user's departments.
     dept_result = await db.execute(
         select(SourceDepartment.department_id)
         .where(SourceDepartment.source_id == source.id)
@@ -124,14 +127,18 @@ async def can_access_document(
         # No departments = Global doc
         return True
 
-    return user.department_id in source_dept_ids
+    user_dept_ids = set(user.department_ids)
+    return bool(user_dept_ids & source_dept_ids)
 
 
 def build_document_filter(user: Employee, action: str = "read"):
     """Build SQLAlchemy filter clauses for listing documents based on user permissions.
-    
-    Returns: (needs_filter: bool, filter_clauses: list)
-    If needs_filter is False, show all documents.
+
+    Returns: (needs_filter: bool, allowed_dept_ids: list[UUID] | None)
+    - needs_filter=False → show all documents (admin or :all scope)
+    - allowed_dept_ids=[]  → show only global docs (user has :own_dept but
+      belongs to zero departments)
+    - allowed_dept_ids=None → no permission at all, empty result
     """
     if user.role == "admin":
         return False, []
@@ -142,8 +149,8 @@ def build_document_filter(user: Employee, action: str = "read"):
         return False, []
 
     if f"doc:{action}:own_dept" in permissions:
-        # Filter: source has no departments (global) OR has user's department
-        return True, [user.department_id]
+        # Filter: source has no departments (global) OR overlaps user's dept set.
+        return True, list(user.department_ids)
 
     # No permission at all — empty result
     return True, None
@@ -160,13 +167,13 @@ async def can_access_skill(
     action: str = "read",
 ) -> bool:
     """Check if user can perform action on an AI skill.
-    
+
     Logic:
     1. Admin → True
     2. User has skill:{action}:all → True
     3. User has skill:{action}:own_dept →
        a. Skill has no department (Global) → True
-       b. Skill's department matches user.department_id → True
+       b. Any of the skill's departments is in user.department_ids → True
        c. Otherwise → False
     4. Otherwise → False
     """
@@ -178,12 +185,12 @@ async def can_access_skill(
     if f"skill:{action}:all" in permissions:
         return True
 
-    # Skill visible if it's Global (no depts) OR user's dept is in skill's depts
+    # Skill visible if it's Global (no depts) OR any overlap with user's depts.
     skill_dept_ids = {sd.department_id for sd in skill.departments}
     if not skill_dept_ids:
         return True
 
-    return user.department_id in skill_dept_ids
+    return bool(set(user.department_ids) & skill_dept_ids)
 
 
 def build_skill_filter(user: Employee, action: str = "read"):
@@ -199,9 +206,9 @@ def build_skill_filter(user: Employee, action: str = "read"):
         return False, []
 
     if f"skill:{action}:own_dept" in permissions:
-        # Filter: skill has no department (global) OR matches user's department
-        # This will be handled in SkillService.list_skills via allowed_department_ids
-        return True, [user.department_id]
+        # Filter: skill has no department (global) OR any overlap with user's depts.
+        # SkillService.list_skills consumes allowed_department_ids as the union set.
+        return True, list(user.department_ids)
 
     return True, None
 

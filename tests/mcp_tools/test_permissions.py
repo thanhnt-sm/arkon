@@ -30,8 +30,8 @@ def _identity(
     return ResolvedIdentity(
         employee_id=uuid.uuid4(),
         employee_name="Test User",
-        department_id=uuid.uuid4(),
-        department_name="Test Dept",
+        department_ids=[uuid.uuid4()],
+        department_names=["Test Dept"],
         is_admin=is_admin,
         permissions=permissions or [],
         workspace_roles=workspace_roles or {},
