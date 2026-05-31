@@ -6,6 +6,9 @@ Endpoints (all mounted under /api):
   POST /admin/local-ai/config      → update config fields
   GET  /admin/local-ai/health      → LM Studio connectivity check
   POST /admin/local-ai/reset-max   → overwrite all keys with MAX_PRESET defaults
+  POST /admin/local-ai/drain-ram   → force-unload all LM Studio models + wait
+                                     for llmworker process to release RAM
+                                     (SIGKILL fallback after wait_s seconds)
 """
 
 from __future__ import annotations
@@ -193,6 +196,19 @@ class HealthOut(BaseModel):
     ok: bool
     message: str
     loaded_models: list[str]
+
+
+class DrainRamOut(BaseModel):
+    unloaded: list[str]
+    worker_pid: Optional[int]
+    ram_released: bool
+    killed: bool
+    message: str
+
+
+class DrainRamIn(BaseModel):
+    wait_s: float = Field(default=30.0, gt=0, le=120, description="Seconds to wait for voluntary RAM release before SIGKILL")
+    kill_on_timeout: bool = Field(default=True, description="Send SIGKILL to llmworker if wait_s elapses")
 
 
 # ---------------------------------------------------------------------------
@@ -466,3 +482,74 @@ async def sync_from_settings(
     await db.commit()
     await _reset_router_best_effort()
     return _build_out(synced, settings_models)
+
+
+@router.post("/admin/local-ai/drain-ram", response_model=DrainRamOut)
+async def drain_ram(
+    body: DrainRamIn = DrainRamIn(),
+    db: AsyncSession = Depends(get_db),
+    _user: Employee = require_permission("org:settings:manage"),
+) -> DrainRamOut:
+    """Force-unload all LM Studio models and wait for the llmworker process to
+    release system RAM.
+
+    This endpoint is the automated equivalent of the manual recovery procedure:
+      1. SDK-unload every loaded model instance.
+      2. Poll the llmworker Node.js process RSS every second until it drops
+         below 500 MB (meaning the model weights have been released to the OS).
+      3. If still resident after ``wait_s`` seconds and ``kill_on_timeout=True``,
+         send SIGKILL to the worker and wait 2 s for OS page reclaim.
+
+    Use this endpoint before retrying a failed source on a RAM-constrained
+    machine, or whenever LM Studio is holding a stale model in memory after a
+    worker crash.
+
+    Returns the raw result from ``LMSClient.force_unload_all()``:
+      - unloaded:      list of model instance IDs that were SDK-unloaded
+      - worker_pid:    PID of the llmworker process (None if not found)
+      - ram_released:  True when RSS confirmed below 500 MB threshold
+      - killed:        True if SIGKILL was used
+      - message:       human-readable summary
+    """
+    from app.ai.local_orchestrator.lms_client_guarded import LMSClientGuarded
+
+    config = await load_config(db)
+    client = LMSClientGuarded(
+        host=config.lms_host,
+        auth_token=config.lms_auth_token,
+    )
+
+    result = await client.force_unload_all(
+        wait_s=body.wait_s,
+        kill_on_timeout=body.kill_on_timeout,
+    )
+
+    unloaded: list[str] = result.get("unloaded", [])
+    ram_released: bool = result.get("ram_released", False)
+    killed: bool = result.get("killed", False)
+    worker_pid: Optional[int] = result.get("worker_pid")
+
+    if ram_released and killed:
+        message = f"RAM freed after SIGKILL (pid={worker_pid}); unloaded {len(unloaded)} model(s)"
+    elif ram_released:
+        message = f"RAM freed voluntarily (pid={worker_pid}); unloaded {len(unloaded)} model(s)"
+    elif not unloaded and worker_pid is None:
+        message = "No models loaded, no llmworker process found — RAM already free"
+    else:
+        message = (
+            f"Unloaded {len(unloaded)} model(s) but llmworker (pid={worker_pid}) "
+            f"may still hold RAM — retry or increase wait_s"
+        )
+
+    await log_audit(
+        db, _user, "drain_ram", "local_ai", "global",
+        reason=message,
+    )
+
+    return DrainRamOut(
+        unloaded=unloaded,
+        worker_pid=worker_pid,
+        ram_released=ram_released,
+        killed=killed,
+        message=message,
+    )

@@ -48,13 +48,16 @@ from app.ai.local_orchestrator.ram_guard import RAMGuard, RAMInsufficientError
 
 logger = logging.getLogger(__name__)
 
+# Default seconds to wait for llmworker RSS to drop before SIGKILL.
+_DRAIN_WAIT_S: float = 30.0
+
 # ---------------------------------------------------------------------------
 # OOM detection regex (compiled once at import)
 # ---------------------------------------------------------------------------
 
 # See module docstring for per-pattern rationale and version compat notes.
 _OOM_PATTERN = re.compile(
-    r"(out of memory|oom|allocation failed|insufficient memory|metal.*memory|mps.*out)",
+    r"(out of memory|oom|allocation failed|insufficient memory|metal.*memory|mps.*out|insufficient.*resource)",
     re.IGNORECASE | re.DOTALL,
 )
 
@@ -197,7 +200,8 @@ class LMSClientGuarded(LMSClient):
                 if fallback_model_id:
                     logger.warning(
                         "LMSClientGuarded: pre-flight RAM check failed for %s "
-                        "(%.1f GB needed, %.2f GB free) — using fallback %s",
+                        "(%.1f GB needed, %.2f GB free) — draining RAM then "
+                        "loading fallback %s",
                         model_id,
                         estimated_ram_gb,
                         ram_err.available_gb,
@@ -206,7 +210,9 @@ class LMSClientGuarded(LMSClient):
                     # Record the switch so get_active_model reflects it
                     if source_id and phase:
                         self._fallback_active[key] = fallback_model_id
-                    return await super().load(fallback_model_id, load_options, timeout_s)
+                    return await self._drain_then_load(
+                        fallback_model_id, load_options, timeout_s
+                    )
                 else:
                     logger.error(
                         "LMSClientGuarded: pre-flight RAM check failed for %s "
@@ -244,7 +250,7 @@ class LMSClientGuarded(LMSClient):
                 count,
             )
 
-            if count >= 2:
+            if count >= 1:
                 if not fallback_model_id:
                     logger.error(
                         "LMSClientGuarded: OOM count=%d reached threshold but "
@@ -255,15 +261,58 @@ class LMSClientGuarded(LMSClient):
 
                 logger.warning(
                     "LMSClientGuarded: OOM threshold reached (count=%d) for "
-                    "source=%s phase=%s — switching to fallback %s",
+                    "source=%s phase=%s — draining RAM then loading fallback %s",
                     count,
                     source_id,
                     phase,
                     fallback_model_id,
                 )
                 self._fallback_active[key] = fallback_model_id
-                # Attempt fallback load
-                return await super().load(fallback_model_id, load_options, timeout_s)
+                # Drain RAM completely before attempting fallback load
+                return await self._drain_then_load(
+                    fallback_model_id, load_options, timeout_s
+                )
 
-            # count == 1 — first OOM, re-raise to let caller retry
+            # Safety fallback (should not be reached if threshold is 1)
             raise
+
+    async def _drain_then_load(
+        self,
+        model_id: str,
+        load_options: LoadOptions,
+        timeout_s: Optional[float],
+    ) -> str:
+        """Drain all loaded models + wait for llmworker RAM release, then load.
+
+        Called from both the RAM pre-flight failure path and the OOM counter
+        threshold path.  Guarantees that the llmworker process has released
+        its resident memory before we ask LM Studio to load the next model.
+
+        Flow:
+          1. ``force_unload_all()``: SDK unload → poll llmworker RSS every 1 s
+             → SIGKILL after ``_DRAIN_WAIT_S`` seconds if still resident.
+          2. ``super().load()``: Load ``model_id`` now that RAM is free.
+
+        If ``force_unload_all`` is not available (mock / REST-only backend),
+        falls back to a bare ``super().load()`` with a warning.
+        """
+        if hasattr(self, "force_unload_all"):
+            drain = await self.force_unload_all(
+                wait_s=_DRAIN_WAIT_S, kill_on_timeout=True
+            )
+            logger.info(
+                "LMSClientGuarded._drain_then_load: drain complete "
+                "— unloaded=%s pid=%s ram_released=%s killed=%s",
+                drain.get("unloaded"),
+                drain.get("worker_pid"),
+                drain.get("ram_released"),
+                drain.get("killed"),
+            )
+        else:
+            logger.warning(
+                "LMSClientGuarded._drain_then_load: force_unload_all not "
+                "available — loading %s without RAM drain",
+                model_id,
+            )
+
+        return await super().load(model_id, load_options, timeout_s)

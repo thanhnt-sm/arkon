@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import signal
+import subprocess
 from contextlib import asynccontextmanager
 from typing import Optional, Protocol, runtime_checkable
 from urllib.parse import urlparse
@@ -374,6 +376,150 @@ class LMSClient:
         async with self._lock:
             self._inflight.pop(instance_id, None)
         logger.info("unload complete: instance_id=%s", instance_id)
+
+    async def force_unload_all(
+        self,
+        wait_s: float = 30.0,
+        kill_on_timeout: bool = True,
+    ) -> dict:
+        """
+        Unload every loaded model and wait for the LM Studio llmworker process
+        to fully release system RAM.
+
+        Background: The LM Studio SDK ``unload()`` call tells LM Studio to
+        release the model, but the underlying llmworker subprocess (the Node.js
+        process that actually holds GPU/CPU pages for the model weights) may
+        keep its RSS for up to 30 seconds while macOS reclaims pages.  If a
+        new ``load()`` is attempted before reclamation completes, LM Studio's
+        own guardrails reject it with an "insufficient system resources" error.
+
+        This method:
+          1. Lists all currently loaded model instances.
+          2. Calls ``unload()`` on each one.
+          3. Polls (1 s interval) the llmworker process RSS until it drops
+             below ``RAM_FREE_THRESHOLD_MB`` or ``wait_s`` elapses.
+          4. If still alive after ``wait_s`` and ``kill_on_timeout=True``,
+             sends SIGKILL to the worker and waits 2 s for OS reclaim.
+
+        Args:
+            wait_s: Maximum seconds to wait for voluntary RAM release.
+            kill_on_timeout: Send SIGKILL to llmworker if wait expires.
+
+        Returns:
+            dict with keys:
+              - unloaded (list[str]): model ids that were unloaded
+              - worker_pid (int | None): llmworker PID found
+              - ram_released (bool): True if RAM dropped below threshold
+              - killed (bool): True if SIGKILL was sent
+        """
+        RAM_FREE_THRESHOLD_MB = 500  # RSS below this → fully released
+        POLL_INTERVAL_S = 1.0
+
+        result: dict = {
+            "unloaded": [],
+            "worker_pid": None,
+            "ram_released": False,
+            "killed": False,
+        }
+
+        # Step 1 — enumerate loaded instances
+        try:
+            loaded_ids = await self.list_loaded()
+        except Exception as exc:
+            logger.warning("force_unload_all: list_loaded failed: %s", exc)
+            loaded_ids = []
+
+        # Step 2 — unload each
+        for iid in loaded_ids:
+            try:
+                await self.unload(iid)
+                result["unloaded"].append(iid)
+                logger.info("force_unload_all: unloaded %s", iid)
+            except BusyError:
+                logger.warning("force_unload_all: %s is busy, skipping", iid)
+            except Exception as exc:
+                logger.warning("force_unload_all: unload %s failed: %s", iid, exc)
+
+        # Step 3 — find llmworker PID and poll RSS
+        worker_pid = await asyncio.to_thread(self._find_llmworker_pid)
+        result["worker_pid"] = worker_pid
+
+        if worker_pid is None:
+            logger.info("force_unload_all: no llmworker process found — RAM already free")
+            result["ram_released"] = True
+            return result
+
+        deadline = asyncio.get_event_loop().time() + wait_s
+        while asyncio.get_event_loop().time() < deadline:
+            await asyncio.sleep(POLL_INTERVAL_S)
+            rss_mb = await asyncio.to_thread(self._get_pid_rss_mb, worker_pid)
+            logger.debug("force_unload_all: llmworker pid=%d rss=%.0f MB", worker_pid, rss_mb)
+            if rss_mb < RAM_FREE_THRESHOLD_MB:
+                result["ram_released"] = True
+                logger.info(
+                    "force_unload_all: llmworker RAM released (rss=%.0f MB < %d MB)",
+                    rss_mb, RAM_FREE_THRESHOLD_MB,
+                )
+                return result
+
+        # Step 4 — timeout: optionally SIGKILL
+        if kill_on_timeout:
+            try:
+                import os
+                os.kill(worker_pid, signal.SIGKILL)
+                result["killed"] = True
+                logger.warning(
+                    "force_unload_all: SIGKILL sent to llmworker pid=%d after %.0fs timeout",
+                    worker_pid, wait_s,
+                )
+                await asyncio.sleep(2.0)  # let OS reclaim pages
+                result["ram_released"] = True
+            except ProcessLookupError:
+                result["ram_released"] = True  # already gone
+            except Exception as exc:
+                logger.error("force_unload_all: SIGKILL failed for pid=%d: %s", worker_pid, exc)
+        else:
+            logger.warning(
+                "force_unload_all: llmworker pid=%d still holding RAM after %.0fs",
+                worker_pid, wait_s,
+            )
+
+        return result
+
+    @staticmethod
+    def _find_llmworker_pid() -> Optional[int]:
+        """Return the PID of the LM Studio llmworker subprocess, or None.
+
+        Searches for any process whose command args include 'llmworker.js'.
+        Runs in a thread (uses subprocess).
+        """
+        try:
+            out = subprocess.check_output(
+                ["pgrep", "-f", "llmworker.js"],
+                text=True,
+                stderr=subprocess.DEVNULL,
+            ).strip()
+            pids = [int(p) for p in out.splitlines() if p.strip().isdigit()]
+            return pids[0] if pids else None
+        except (subprocess.CalledProcessError, FileNotFoundError, ValueError):
+            return None
+
+    @staticmethod
+    def _get_pid_rss_mb(pid: int) -> float:
+        """Return the RSS (resident set size) of a PID in MB, or a large number if gone.
+
+        Runs in a thread (uses subprocess ps).
+        """
+        try:
+            out = subprocess.check_output(
+                ["ps", "-p", str(pid), "-o", "rss="],
+                text=True,
+                stderr=subprocess.DEVNULL,
+            ).strip()
+            # macOS ps returns RSS in KB
+            return int(out) / 1024.0 if out else 0.0
+        except (subprocess.CalledProcessError, ValueError):
+            return 0.0  # process gone
 
     async def list_loaded(self) -> list[str]:
         """Return list of currently loaded model instance_ids."""

@@ -9,6 +9,8 @@
 #   ./retry-sources.sh --watch <id>             # Watch progress of a single source
 #   ./retry-sources.sh --set-timeout            # Apply timeout env vars to .env.docker + restart worker
 #   ./retry-sources.sh --set-timeout --dedup 600 --reconcile 300 --planning 900
+#   ./retry-sources.sh --drain-ram              # Force-unload all LM Studio models + free RAM (standalone)
+#   ./retry-sources.sh --drain-ram <id1> ...    # Drain RAM then retry source(s)
 #
 # Env overrides:
 #   ARKON_URL           e.g. http://localhost:5055
@@ -150,8 +152,9 @@ EOF
 # ---------------------------------------------------------------------------
 # Argument parsing
 # ---------------------------------------------------------------------------
-MODE="auto"    # auto | all | ids | list | watch | set-timeout
+MODE="auto"    # auto | all | ids | list | watch | set-timeout | drain-ram
 TARGET_IDS=()
+DRAIN_FIRST=false   # --drain-ram combined with ids/all
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -159,11 +162,19 @@ while [[ $# -gt 0 ]]; do
     --list)        MODE="list"; shift ;;
     --watch)       MODE="watch"; shift; TARGET_IDS=("$1"); shift ;;
     --set-timeout) MODE="set-timeout"; shift ;;
+    --drain-ram)
+      # If next arg is an ID or --all, drain first then retry; else standalone drain.
+      if [[ ${2:-} == --all || ${2:-} =~ ^[0-9a-f-]{36}$ ]]; then
+        DRAIN_FIRST=true
+      else
+        MODE="drain-ram"
+      fi
+      shift ;;
     --dedup)       OPT_DEDUP="$2"; shift 2 ;;
     --reconcile)   OPT_RECONCILE="$2"; shift 2 ;;
     --planning)    OPT_PLANNING="$2"; shift 2 ;;
     -h|--help)
-      head -22 "$0" | tail -20
+      head -24 "$0" | tail -22
       exit 0 ;;
     -*)
       die "Unknown option: $1 (run with --help)" ;;
@@ -202,13 +213,28 @@ log "Authenticating as $ARKON_EMAIL..."
 TOKEN=$(get_token)
 log "Token OK (${#TOKEN} chars)"
 
+# --drain-ram (standalone — no source IDs)
+if [[ "$MODE" == "drain-ram" ]]; then
+  log "Draining LM Studio RAM via API..."
+  DRAIN_RESP=$(curl -s -X POST "$ARKON_URL/api/admin/local-ai/drain-ram" \
+    -H "Authorization: Bearer $TOKEN" \
+    -H "Content-Type: application/json" \
+    -d '{"wait_s": 30, "kill_on_timeout": true}')
+  MSG=$(echo "$DRAIN_RESP" | jq -r '.message // .detail // "(no message)"')
+  RAM=$(echo "$DRAIN_RESP" | jq -r '.ram_released // "?"')
+  KILLED=$(echo "$DRAIN_RESP" | jq -r '.killed // "?"')
+  log "  ram_released=${RAM}  killed=${KILLED}"
+  log "  $MSG"
+  exit 0
+fi
+
 # --- Resolve IDs ---
 if [[ "$MODE" == "all" ]]; then
   log "Mode: ALL sources (force-reset non-retryable first)"
-  mapfile -t TARGET_IDS < <(db_query "SELECT id FROM sources;" | tr -d ' ')
+  TARGET_IDS=( $(db_query "SELECT id FROM sources;" | tr -d ' ') )
 elif [[ "$MODE" == "auto" ]]; then
   log "Mode: AUTO — retrying sources in error/plan_ready"
-  mapfile -t TARGET_IDS < <(db_query "SELECT id FROM sources WHERE status IN ('error','plan_ready');" | tr -d ' ')
+  TARGET_IDS=( $(db_query "SELECT id FROM sources WHERE status IN ('error','plan_ready');" | tr -d ' ') )
 fi
 
 if [[ ${#TARGET_IDS[@]} -eq 0 ]]; then
@@ -232,6 +258,22 @@ if [[ "$MODE" == "all" ]]; then
       force_reset_source "$id"
     fi
   done
+fi
+
+# --- Drain RAM first (--drain-ram <ids> or --drain-ram --all) ---
+if [[ "$DRAIN_FIRST" == "true" ]]; then
+  log "Draining LM Studio RAM before retry..."
+  DRAIN_RESP=$(curl -s -X POST "$ARKON_URL/api/admin/local-ai/drain-ram" \
+    -H "Authorization: Bearer $TOKEN" \
+    -H "Content-Type: application/json" \
+    -d '{"wait_s": 30, "kill_on_timeout": true}')
+  MSG=$(echo "$DRAIN_RESP" | jq -r '.message // .detail // "(no message)"')
+  RAM=$(echo "$DRAIN_RESP" | jq -r '.ram_released // "?"')
+  log "  drain result: ram_released=${RAM} — $MSG"
+  if [[ "$RAM" != "true" ]]; then
+    warn "RAM may not be fully released. Proceeding anyway..."
+  fi
+  echo ""
 fi
 
 # --- Call retry ---

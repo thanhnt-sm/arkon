@@ -290,20 +290,87 @@ class PhaseRouter:
             return results
         return await self._embedding.embed_document(texts)
 
-    async def shutdown(self) -> None:
-        """Unload current model and return to IDLE. Safe to call from IDLE."""
+    async def shutdown(self, force: bool = False) -> None:
+        """Unload current model and return to IDLE. Safe to call from IDLE.
+
+        Args:
+            force: If True, delegate to ``drain_ram()`` which polls the
+                   llmworker process until RSS is actually released (SIGKILL
+                   fallback after 30 s).  Use this before loading a large
+                   model on memory-constrained hardware.
+        """
+        if force:
+            await self.drain_ram()
+            return
         async with self._lock:
             if self._current_slot and self._current_instance_id:
                 await self._unload_current()
             self._state = RouterState.IDLE
             logger.info("PhaseRouter: shutdown complete, state=IDLE")
 
+    async def drain_ram(self, wait_s: float = 30.0, kill_on_timeout: bool = True) -> dict:
+        """Force-unload all LM Studio models and wait for RAM to be reclaimed.
+
+        This is the hard reset path for memory-constrained environments (e.g.
+        32 GB RAM with a 18 GB GGUF model).  It:
+          1. Acquires the router lock and calls ``_unload_current()`` if a
+             model is loaded (graceful SDK unload + state reset).
+          2. Delegates to ``LMSClient.force_unload_all()`` which polls the
+             llmworker process RSS every second until memory drops below
+             500 MB.  If the process is still holding RAM after ``wait_s``,
+             it sends SIGKILL and waits 2 s for OS reclaim.
+
+        Returns:
+            Result dict from ``LMSClient.force_unload_all()`` with keys:
+              - unloaded: list of model ids that were SDK-unloaded
+              - worker_pid: llmworker PID (None if not found)
+              - ram_released: True when RSS confirmed below threshold
+              - killed: True if SIGKILL was used
+        """
+        # Graceful SDK unload under lock first
+        async with self._lock:
+            if self._current_slot and self._current_instance_id:
+                await self._unload_current()
+            self._state = RouterState.IDLE
+
+        # Check if _lms supports force_unload_all (LMSClient does; mocks may not)
+        if not hasattr(self._lms, "force_unload_all"):
+            logger.warning(
+                "PhaseRouter.drain_ram: _lms does not support force_unload_all — "
+                "skipping llmworker poll (mock or REST-only backend)"
+            )
+            return {"unloaded": [], "worker_pid": None, "ram_released": False, "killed": False}
+
+        result = await self._lms.force_unload_all(wait_s=wait_s, kill_on_timeout=kill_on_timeout)
+        logger.info(
+            "PhaseRouter.drain_ram: complete — unloaded={} pid={} ram_released={} killed={}",
+            result.get("unloaded"),
+            result.get("worker_pid"),
+            result.get("ram_released"),
+            result.get("killed"),
+        )
+        return result
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
     async def _unload_current(self) -> None:
-        """Unload currently loaded instance. Caller must hold ``_lock``."""
+        """Unload currently loaded instance and wait for RAM to be physically freed.
+
+        Caller must hold ``_lock``.
+
+        Behaviour:
+          - Sets state to the slot's UNLOADING state during teardown.
+          - If ``_lms`` supports ``force_unload_all()`` (i.e. is an
+            ``LMSClient`` instance), delegates there so the llmworker process
+            is polled until its RSS drops below 500 MB (SIGKILL fallback after
+            30 s).  This prevents the next ``_load_slot()`` from failing with
+            "insufficient system resources" because the previous model weights
+            are still resident in memory.
+          - Falls back to a plain ``lms.unload()`` call for mocks / REST-only
+            backends that don't expose ``force_unload_all()``.
+        """
         assert self._current_slot is not None
         assert self._current_instance_id is not None
 
@@ -316,8 +383,22 @@ class PhaseRouter:
             self._state,
         )
 
+        prev_slot = self._current_slot
         try:
-            await self._lms.unload(self._current_instance_id)
+            if hasattr(self._lms, "force_unload_all"):
+                # Full drain: SDK unload + poll llmworker RSS + SIGKILL fallback
+                drain = await self._lms.force_unload_all(wait_s=30.0, kill_on_timeout=True)
+                logger.info(
+                    "PhaseRouter._unload_current: drain complete — "
+                    "unloaded={} pid={} ram_released={} killed={}",
+                    drain.get("unloaded"),
+                    drain.get("worker_pid"),
+                    drain.get("ram_released"),
+                    drain.get("killed"),
+                )
+            else:
+                # Mock / REST-only backend — plain SDK unload, no RSS polling
+                await self._lms.unload(self._current_instance_id)
         except Exception as exc:
             logger.warning(
                 "PhaseRouter: unload failed (slot={} instance_id={}): {}",
@@ -326,7 +407,6 @@ class PhaseRouter:
                 exc,
             )
         finally:
-            prev_slot = self._current_slot
             self._current_slot = None
             self._current_instance_id = None
             self._state = RouterState.IDLE
@@ -339,7 +419,19 @@ class PhaseRouter:
 
         Passes source_id + RAM metadata to LMSClientGuarded when available.
         Falls back to plain signature for LMSClientProtocol-only objects.
+
+        On the first load failure that looks like an OOM / resource error,
+        runs a full RAM drain (``force_unload_all``) and retries once.  This
+        covers the case where a previous worker crash left a stale llmworker
+        process holding model weights in memory.
         """
+        import re as _re
+        _OOM_RE = _re.compile(
+            r"(out of memory|oom|allocation failed|insufficient memory"
+            r"|metal.*memory|mps.*out|insufficient.*resource)",
+            _re.IGNORECASE | _re.DOTALL,
+        )
+
         model_id = _model_id_for_slot(slot, self._config)
         load_options = _build_load_options(slot, self._config)
         loading_state, active_state, _ = _SLOT_STATES[slot]
@@ -352,20 +444,58 @@ class PhaseRouter:
             self._state,
         )
 
-        # Pass RAM metadata when client supports it (LMSClientGuarded).
-        # Plain LMSClientProtocol callers (e.g. mocks) only get the base args.
-        if isinstance(self._lms, LMSClientGuarded):
-            slot_cfg = self._config.vision if slot == "vision" else self._config.main_llm
-            instance_id = await self._lms.load(
-                model_id,
-                load_options,
-                source_id=source_id,
-                phase=slot,
-                estimated_ram_gb=slot_cfg.estimated_ram_gb,
-                fallback_model_id=slot_cfg.fallback_model_id,
+        async def _do_load() -> str:
+            """Single load attempt — uses LMSClientGuarded extras when available."""
+            if isinstance(self._lms, LMSClientGuarded):
+                slot_cfg = self._config.vision if slot == "vision" else self._config.main_llm
+                return await self._lms.load(
+                    model_id,
+                    load_options,
+                    source_id=source_id,
+                    phase=slot,
+                    estimated_ram_gb=slot_cfg.estimated_ram_gb,
+                    fallback_model_id=slot_cfg.fallback_model_id,
+                )
+            return await self._lms.load(model_id, load_options)
+
+        try:
+            instance_id = await _do_load()
+        except Exception as exc:
+            # If it looks like OOM/resource error AND we can drain, retry once.
+            if _OOM_RE.search(str(exc)) and hasattr(self._lms, "force_unload_all"):
+                logger.warning(
+                    "PhaseRouter._load_slot: OOM on first load attempt "
+                    "(slot={} model={}) — draining RAM and retrying once. err={}",
+                    slot, model_id, exc,
+                )
+                # Release the lock temporarily to allow drain (drain is async
+                # and must not hold the router lock during its poll loop).
+                # We re-enter the lock state machine after drain completes.
+                self._state = RouterState.IDLE
+            else:
+                raise
+
+            # Drain outside lock to avoid blocking other coroutines during poll.
+            # NOTE: _load_slot callers always hold _lock; we release it here.
+            self._lock.release()
+            try:
+                drain = await self._lms.force_unload_all(wait_s=30.0, kill_on_timeout=True)
+                logger.info(
+                    "PhaseRouter._load_slot: drain complete — "
+                    "ram_released={} killed={}",
+                    drain.get("ram_released"),
+                    drain.get("killed"),
+                )
+            finally:
+                await self._lock.acquire()
+
+            # Retry load after drain.
+            self._state = loading_state
+            logger.info(
+                "PhaseRouter._load_slot: retrying load after drain "
+                "slot={} model={}", slot, model_id
             )
-        else:
-            instance_id = await self._lms.load(model_id, load_options)
+            instance_id = await _do_load()  # raises on second failure
 
         self._current_slot = slot
         self._current_instance_id = instance_id

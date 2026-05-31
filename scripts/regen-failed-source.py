@@ -2,11 +2,12 @@
 Regenerate wiki pages for a source whose previous MRP refine left
 '(Page generation failed: ...)' stubs baked into content_md.
 
-Usage (inside arkon_worker container):
-    docker exec arkon_worker python scripts/regen-failed-source.py <source_id>
+Usage (mount-less, from repo root):
+    cat scripts/regen-failed-source.py | docker exec -i arkon_worker python - <source_id>
 
-Or via mount-less path (script is copied in by run-regen.sh):
-    docker exec arkon_worker python /tmp/regen_failed_source.py <source_id>
+Or copy and run manually:
+    docker cp scripts/regen-failed-source.py arkon_worker:/tmp/
+    docker exec arkon_worker python /tmp/regen-failed-source.py <source_id>
 
 Idempotent. Safe to re-run — refine task overwrites by slug.
 
