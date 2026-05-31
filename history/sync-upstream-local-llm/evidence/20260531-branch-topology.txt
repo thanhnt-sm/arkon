@@ -1,0 +1,54 @@
+# Branch Topology Evidence - 2026-05-31
+
+## git status --short --branch
+## main...origin/main
+ M .agent/sync_history/INDEX.md
+ M .khuym/state.json
+?? .agent/sync_history/20260531_073639_upstream_main.patch
+?? history/sync-upstream-local-llm/
+
+## HEAD origin/main upstream/main
+834323767680fa747426322916ab28579d2aebdf
+834323767680fa747426322916ab28579d2aebdf
+a735a00095d221daca9a23721b7918658322c3f8
+
+## HEAD...upstream/main (left=HEAD ahead, right=upstream ahead)
+47	0
+
+## upstream/main...HEAD (left=upstream ahead, right=HEAD ahead)
+0	47
+
+## merge-base --is-ancestor upstream/main HEAD
+rc=0 upstream/main is ancestor of HEAD
+
+## recent local commits after upstream/main
+8343237 update
+803423a chore: finalize upstream sync resolution for MRP writer
+63f98b3 chore: commit local changes before upstream merge
+f47b079 docs(journal): local AI orchestrator 8-phase implementation
+693bdea docs(local-ai): operator setup, migration playbook, architecture refs
+21e5349 test(local-ai): end-to-end pipeline test scaffold + VI fixture + runbook
+766e672 feat(admin): /admin/local-ai page + 4 endpoints for mode + per-phase config
+d8c09b6 feat(local-ai): phase router state machine + provider adapter + registry swap
+6a0ddca feat(local-ai): prompt templates, sampling profiles, embedding service
+083fc6b feat(local-ai): LM Studio client wrapper with retry, REST fallback, RAM guard
+7f41084 feat(local-ai): module skeleton + KV schema + alembic seed
+184c6d6 docs(journal): fork protection policy — ours-first on upstream sync
+e882ca6 feat(mrp): LLM pre-flight ping + abort-early retry + caption sanitization
+5661271 feat(mrp): sequential writer + per-page commit + stub breaker
+6e27393 fix(docs): correct endpoint URLs (/admin → /api) to match router mount
+67d6f55 docs(journal): MRP handoff shipping cook execution notes
+c149b68 docs: sync ARCHITECTURE/WIKI/HOW_TO_RUN to Phase 3.5 DIGEST + new admin endpoints
+70a58fb chore: gitignore logs/ + egg-info + unit tests for MRP helpers
+2d19c57 docs: sync to local-LLM MRP overhaul + handoff shipping
+096a779 feat(ui): digest page-type badge 'AI-generated summary'
+73a86cc chore(scripts): A/B harness + regen + retry + LLM endpoint config
+3bf46ec chore: KV seed migration + squid LAN allow
+95cacfb feat(worker): _check_intake_paused hook at 5 task entry points
+4b5b048 feat(wiki): add 'digest' to PAGE_TYPES
+755f58f feat(sources): POST /sources/{id}/regen-digest with 1/min rate limit
+0a1abb6 feat(admin): /admin/llm-health + PATCH /admin/app-config
+1bd4556 feat(llm): profile-aware retry policy in openai_provider
+aae34d1 feat(mrp): pipeline-shape classifier + Phase 3.5 DIGEST + pause gating
+59ab366 feat(llm): add runtime_profile cache + LADDER allowlist
+a1a0713 docs(setup): document MRP_AUTO_APPROVE_PLAN + MAX_SOURCE_FILE_MB env vars

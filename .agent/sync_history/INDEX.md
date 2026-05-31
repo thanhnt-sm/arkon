@@ -9,3 +9,4 @@ Forensic ledger — one row per `safe_sync.sh` invocation (dry-run + merged).
 | 2026-05-23T09:18:18Z | e5bde7a7a9b5 | 20260523_161818_upstream_main.patch | pending |  | dry-run |
 | 2026-05-23T09:23:19Z | e5bde7a7a9b5 | 20260523_162318_upstream_main.patch | pending |  | dry-run |
 | 2026-05-30T07:11:03Z | a735a00095d2 | 20260530_141102_upstream_main.patch | pending |  | dry-run |
+| 2026-05-31T00:36:41Z | a735a00095d2 | 20260531_073639_upstream_main.patch | pending |  | dry-run |

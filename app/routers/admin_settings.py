@@ -80,6 +80,30 @@ async def update_settings(
     # Audit log
     keys_updated = list(body.settings.keys())
     await log_audit(db, _user, "update", "settings", "global", reason=f"Updated keys: {', '.join(keys_updated)}")
+    
+    # Auto-sync Local AI config if model-related settings were changed
+    model_keys = {
+        "active_llm_model_spec_id", "llm_custom_model_id", "llm_base_url",
+        "active_vision_model_spec_id", "vision_custom_model_id", "vision_base_url",
+        "active_embedding_model_spec_id", "embedding_custom_model_id", "embedding_base_url"
+    }
+    if any(k in model_keys for k in keys_updated):
+        try:
+            from app.routers.admin_local_ai import (
+                _resolve_settings_models,
+                _apply_settings_models,
+                _reset_router_best_effort
+            )
+            from app.ai.local_orchestrator.config import load_config, save_config
+            
+            existing = await load_config(db)
+            settings_models = await _resolve_settings_models(db)
+            synced = _apply_settings_models(existing, settings_models)
+            await save_config(db, synced)
+            await _reset_router_best_effort()
+        except Exception:
+            pass
+
     await db.commit()
     return {"updated": results}
 
